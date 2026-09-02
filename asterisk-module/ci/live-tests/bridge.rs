@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::super::StaticDescriptor;
 use super::super::boundary::contain_panic as callback_guard;
+use super::super::direct::channel_driver::technology_ptr;
 use super::super::direct::module_info::module_self;
 use super::super::sys;
 use super::bridge::{acquire_barge_bridge, create_bridge, prepare_conference_destination};
@@ -637,6 +638,62 @@ fn participant_controls(run: u64) -> HarnessResult<()> {
     snapshot.assert_restored(&[id])
 }
 
+fn pbx_hold_indication_controls_music_on_hold(run: u64) -> HarnessResult<()> {
+    let snapshot = Snapshot::capture()?;
+    {
+        let channel = SyntheticChannel::new(run, "pbx-hold-moh")?;
+        let indicate = unsafe { (*technology_ptr()).indicate }
+            .ok_or_else(|| HarnessError::new("SCCP technology has no indication callback"))?;
+        let music_class = c"default";
+        let held = unsafe {
+            indicate(
+                channel.raw(),
+                sys::AST_CONTROL_HOLD as c_int,
+                music_class.as_ptr().cast(),
+                music_class.to_bytes_with_nul().len(),
+            )
+        };
+        ensure(held == 0, "PBX hold indication rejected music on hold")?;
+        ensure(
+            !unsafe { sys::ast_channel_generator(channel.raw()) }.is_null(),
+            "PBX hold indication did not start the Asterisk media generator",
+        )?;
+
+        let unheld = unsafe {
+            indicate(
+                channel.raw(),
+                sys::AST_CONTROL_UNHOLD as c_int,
+                ptr::null(),
+                0,
+            )
+        };
+        ensure(unheld == 0, "PBX unhold indication was rejected")?;
+        ensure(
+            unsafe { sys::ast_channel_generator(channel.raw()) }.is_null(),
+            "PBX unhold indication did not stop the Asterisk media generator",
+        )?;
+
+        let malformed_class = b"default";
+        let malformed = unsafe {
+            indicate(
+                channel.raw(),
+                sys::AST_CONTROL_HOLD as c_int,
+                malformed_class.as_ptr().cast(),
+                malformed_class.len(),
+            )
+        };
+        ensure(
+            malformed == -1,
+            "PBX hold indication accepted an unterminated music class",
+        )?;
+        ensure(
+            unsafe { sys::ast_channel_generator(channel.raw()) }.is_null(),
+            "rejected PBX hold indication changed the channel generator",
+        )?;
+    }
+    snapshot.assert_restored(&[])
+}
+
 fn barge_acquire_release(run: u64) -> HarnessResult<()> {
     let snapshot = Snapshot::capture()?;
     let owned_id = bridge_id(run, "barge-owned");
@@ -817,13 +874,14 @@ fn run_harness() -> HarnessResult<usize> {
             current.checked_add(1)
         })
         .map_err(|_| HarnessError::new("live bridge run identifier space is exhausted"))?;
-    let scenarios: [fn(u64) -> HarnessResult<()>; 10] = [
+    let scenarios: [fn(u64) -> HarnessResult<()>; 11] = [
         create_add_remove,
         explicit_destruction,
         consultation_merge,
         multiple_call_merge,
         participant_merge,
         participant_controls,
+        pbx_hold_indication_controls_music_on_hold,
         barge_acquire_release,
         recoverable_failures,
         conference_destination_teardown,

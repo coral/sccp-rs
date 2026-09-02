@@ -22,7 +22,8 @@ pub use allocation::{
 pub use completion::{accept_completion_request, configure_generic_completion};
 pub use control::{
     AttendedTransferResult, ChannelControl, TonePair, attended_transfer, hangup, queue_control,
-    queue_digit, start_dialplan, start_ringing, start_tone_pair, stop_tone_pair, uniqueid_in_use,
+    queue_digit, start_dialplan, start_music_on_hold, start_ringing, start_tone_pair,
+    stop_music_on_hold, stop_tone_pair, uniqueid_in_use,
 };
 pub use media::{
     audio_capability_mask, audio_framing, best_translated_audio_format, change_source,

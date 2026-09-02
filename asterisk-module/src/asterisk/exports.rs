@@ -260,8 +260,6 @@ pub enum ChannelIndication {
     Congestion,
     Progress,
     Proceeding,
-    Hold,
-    Unhold,
     ConnectedLine,
     Redirecting,
     Incomplete,
@@ -1132,8 +1130,6 @@ pub unsafe fn indicate_channel(
         ChannelIndication::Congestion | ChannelIndication::Incomplete => {
             RuntimeCallSignalKind::Congestion
         }
-        ChannelIndication::Hold => RuntimeCallSignalKind::Hold,
-        ChannelIndication::Unhold => RuntimeCallSignalKind::Unhold,
         ChannelIndication::VideoUpdate => RuntimeCallSignalKind::VideoUpdate,
         ChannelIndication::ConnectedLine | ChannelIndication::Redirecting => {
             let Some(snapshot) = read_party_snapshot(channel_ptr) else {

@@ -297,17 +297,25 @@ technology followed by the logical line number:
 [from-internal]
 exten => 1006,1,NoOp(Ringing SCCP front desk)
  same => n,Dial(SCCP/1006,30)
- same => n,ExecIf($["${DIALSTATUS}" = "BUSY"]?Busy(5))
+ same => n,GotoIf($["${DIALSTATUS}" = "BUSY"]?busy)
+ same => n,GotoIf($["${DIALSTATUS}" = "CHANUNAVAIL"]?unavailable)
  same => n,Congestion(5)
- same => n,Hangup()
+ same => n(unavailable),SCCPIndicate(unavailable)
+ same => n,Wait(5)
+ same => n,Hangup(20)
+ same => n(busy),Busy(5)
 ```
 
 `Dial()` returns to the next priority when it cannot create or reach the
 destination channel. A bare `Hangup()` at that point clears an SCCP handset
-without presenting a failure reason. The `Busy()`/`Congestion()` branches above
-send Asterisk's terminal indication to the channel first, allowing the handset
-to show and play the corresponding failure state. More complex dialplans can
-branch on every documented `DIALSTATUS` value instead.
+without presenting a failure reason. `BUSY` selects the phone's native busy
+state. `CHANUNAVAIL` means that the configured endpoint cannot currently be
+reached; SCCP has no distinct wire call-state for that condition, so the
+`SCCPIndicate()` application supplies the accurate `Unavailable` call prompt
+while retaining the native congestion/reorder tone. `Hangup(20)` preserves the
+subscriber-absent cause after the presentation interval. The final
+`Congestion()` covers actual routing or resource failures. More complex
+dialplans can branch on every documented `DIALSTATUS` value instead.
 
 When a line appears on several phones, `SCCP/1006` addresses that logical line.
 To select a particular configured appearance, use the device-qualified form:

@@ -5,9 +5,9 @@ use crate::asterisk::phone::{
     RuntimeDndMutation, RuntimeDndMutationError, begin_parking_retrieval, cancel_no_answer_timer,
     clear_no_answer_route, configured_mobility_button, execute_dnd_mutation,
     expire_forwarding_entries, expire_no_answer_routes, expire_parking_attempts,
-    handle_hold_or_resume, handle_parking_event, handle_phone_event, log_feature_store_error,
-    mobility_device_registered, publish_ami_event, publish_device_features,
-    publish_feature_changes, remove_conference_participant, set_conference_participant_moderator,
+    handle_parking_event, handle_phone_event, log_feature_store_error, mobility_device_registered,
+    publish_ami_event, publish_device_features, publish_feature_changes,
+    remove_conference_participant, set_conference_participant_moderator,
     set_conference_participant_muted, show_conference_list, update_device_features_locked,
 };
 use crate::asterisk::{
@@ -41,6 +41,7 @@ use crate::asterisk::{
     FeatureControlMutation, FeatureControlOutcome, FeatureControlProvider,
     FeatureControlProviderError, FeatureStore, FeatureStoreError, ForwardingDestination,
     ForwardingEntryRegistry, ForwardingKind, ForwardingOperation, ForwardingRouteReason, Handle,
+    HandsetCallIndication, HandsetCallIndicationProvider, HandsetCallIndicationProviderError,
     HandsetEffect, HandsetMessageOperation, HandsetMessageProvider, HandsetMessageProviderError,
     HashMap, HashSet, HttpRegistration, Instant, InventoryProvider, InventoryProviderError,
     InventoryRegistration, InventorySnapshot, InventoryValue, IpAddr, IpAddressType, Ipv4Addr,
@@ -80,10 +81,11 @@ use crate::asterisk::{
     register_called_party_application, register_channel_query,
     register_codec_preference_application, register_control_actions, register_device_query,
     register_directory_http, register_feature_control_actions,
-    register_handset_message_application, register_inventory_actions, register_line_query,
-    register_runtime_status_actions, register_service_control_actions, replacement_anchor_plan,
-    restore_attempts_exhausted, restore_redirecting_update, start_announcement, sys,
-    validate_native_channel_metadata, validate_redirecting_update,
+    register_handset_call_indication_application, register_handset_message_application,
+    register_inventory_actions, register_line_query, register_runtime_status_actions,
+    register_service_control_actions, replacement_anchor_plan, restore_attempts_exhausted,
+    restore_redirecting_update, start_announcement, sys, validate_native_channel_metadata,
+    validate_redirecting_update,
 };
 use crate::pbx::operations::CallFeatureProvider;
 
@@ -168,9 +170,9 @@ pub use management::{
     RuntimeCallSignalQueue, RuntimeCalledPartyProvider, RuntimeChannelQueryProvider,
     RuntimeCodecPreferenceProvider, RuntimeControlProvider, RuntimeControlRequest,
     RuntimeDeviceQueryProvider, RuntimeDirectoryProvider, RuntimeFeatureControlProvider,
-    RuntimeHandsetMessageProvider, RuntimeInventoryProvider, RuntimeLineQueryProvider,
-    RuntimeRegistrationContexts, RuntimeServiceProvider, RuntimeServiceRequest, Shared,
-    execute_forwarding_mutation,
+    RuntimeHandsetCallIndicationProvider, RuntimeHandsetMessageProvider, RuntimeInventoryProvider,
+    RuntimeLineQueryProvider, RuntimeRegistrationContexts, RuntimeServiceProvider,
+    RuntimeServiceRequest, Shared, execute_forwarding_mutation,
 };
 pub use media::{
     MediaFailureDisposition, configured_audio_processing, configured_audio_traffic_class,

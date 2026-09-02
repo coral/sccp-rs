@@ -18,24 +18,25 @@ use super::{
     DirectoryRecord, DndMode, DriverEffect, ExternalAddressCache, FeatureControlMutation,
     FeatureControlOutcome, FeatureControlProvider, FeatureControlProviderError, FeatureStore,
     FeatureStoreError, ForwardingDestination, ForwardingEntryRegistry, ForwardingKind,
-    ForwardingOperation, Handle, HandsetEffect, HandsetMessageOperation, HandsetMessageProvider,
-    HandsetMessageProviderError, HashMap, HashSet, HttpRegistration, Instant, InventoryProvider,
-    InventoryProviderError, InventoryRegistration, InventorySnapshot, InventoryValue, JoinHandle,
-    LineAppearanceSnapshot, LineCallSummary, LineQueryLookupError, LineQueryProvider,
-    LineQuerySnapshot, LineQueryTarget, MANAGER_CONTROL_TIMEOUT, ManagerActionRegistration,
-    MediaAnchorRegistry, MediaAnchorRestores, MediaDirection, MediaKind, MediaStatisticsStatus,
-    MediaStreamState, MediaStreamStatus, MobilityRegistry, MobilitySlot, ModuleConfig, Mutex,
-    MutexExt as _, NameCharset, NoAnswerTimerRegistry, NonNull, NumberPlan, ParkingRegistry,
-    ParkingSubscription, PartyIdentity, PartySnapshot, PbxAudioFormat, PbxBridgeId, PbxCallId,
-    PhoneCommand, PhoneCommandAction, Presentation, RegisteredDeviceSummary,
-    RegistrationContextRegistry, RegistrationRegistryError, Runtime, RuntimeDndMutation,
-    RuntimeDndMutationError, RuntimeRecordingTriggerQueue, RuntimeStatusProvider,
-    RuntimeStatusProviderError, RuntimeStatusSnapshot, RwLock, RwLockExt as _, ServerHandle,
-    ServiceControlProvider, ServiceOperation, ServiceOutcome, ServiceProviderError,
-    SharedNoAnswerRoute, StationMediaCapabilities, SystemHostResolver, TransactionId, Weak,
-    configured_inventory, configured_registration_appearances, controller_step,
-    execute_dnd_mutation, forwarding_ui_line_instances, mpsc, native_audio_format, native_bridging,
-    native_channel, negotiate_audio, pbx_audio_format, publish_device_features,
+    ForwardingOperation, Handle, HandsetCallIndication, HandsetCallIndicationProvider,
+    HandsetCallIndicationProviderError, HandsetEffect, HandsetMessageOperation,
+    HandsetMessageProvider, HandsetMessageProviderError, HashMap, HashSet, HttpRegistration,
+    Instant, InventoryProvider, InventoryProviderError, InventoryRegistration, InventorySnapshot,
+    InventoryValue, JoinHandle, LineAppearanceSnapshot, LineCallSummary, LineQueryLookupError,
+    LineQueryProvider, LineQuerySnapshot, LineQueryTarget, MANAGER_CONTROL_TIMEOUT,
+    ManagerActionRegistration, MediaAnchorRegistry, MediaAnchorRestores, MediaDirection, MediaKind,
+    MediaStatisticsStatus, MediaStreamState, MediaStreamStatus, MobilityRegistry, MobilitySlot,
+    ModuleConfig, Mutex, MutexExt as _, NameCharset, NoAnswerTimerRegistry, NonNull, NumberPlan,
+    ParkingRegistry, ParkingSubscription, PartyIdentity, PartySnapshot, PbxAudioFormat,
+    PbxBridgeId, PbxCallId, PhoneCallState, PhoneCommand, PhoneCommandAction, Presentation,
+    RegisteredDeviceSummary, RegistrationContextRegistry, RegistrationRegistryError, Runtime,
+    RuntimeDndMutation, RuntimeDndMutationError, RuntimeRecordingTriggerQueue,
+    RuntimeStatusProvider, RuntimeStatusProviderError, RuntimeStatusSnapshot, RwLock,
+    RwLockExt as _, ServerHandle, ServiceControlProvider, ServiceOperation, ServiceOutcome,
+    ServiceProviderError, SharedNoAnswerRoute, StationMediaCapabilities, SystemHostResolver,
+    TransactionId, Weak, configured_inventory, configured_registration_appearances,
+    controller_step, execute_dnd_mutation, forwarding_ui_line_instances, mpsc, native_audio_format,
+    native_bridging, native_channel, negotiate_audio, pbx_audio_format, publish_device_features,
     publish_feature_changes, raw, records_from_config, runtime_line_binding, state_from_channel,
     sys, update_device_features_locked,
 };
@@ -149,8 +150,6 @@ pub enum RuntimeCallSignalKind {
     Progress,
     Busy,
     Congestion,
-    Hold,
-    Unhold,
     VideoUpdate,
     PartyUpdate(Box<PartySnapshot>),
 }
@@ -931,6 +930,11 @@ pub struct RuntimeHandsetMessageProvider {
     pub phone: ServerHandle,
 }
 
+pub struct RuntimeHandsetCallIndicationProvider {
+    pub shared: Weak<Shared>,
+    pub phone: ServerHandle,
+}
+
 pub struct AudioPreferencePolicy {
     pub configured: Vec<PbxAudioFormat>,
     pub codecs: Vec<Codec>,
@@ -1031,6 +1035,59 @@ impl HandsetMessageProvider for RuntimeHandsetMessageProvider {
                 },
             ))
             .map_err(|_| HandsetMessageProviderError::HandsetRejected)
+    }
+}
+
+impl HandsetCallIndicationProvider for RuntimeHandsetCallIndicationProvider {
+    fn apply(
+        &self,
+        channel: &AsteriskChannel<'_>,
+        indication: HandsetCallIndication,
+    ) -> Result<(), HandsetCallIndicationProviderError> {
+        let shared = self
+            .shared
+            .upgrade()
+            .ok_or(HandsetCallIndicationProviderError::Unavailable)?;
+        let state = unsafe { state_from_channel(channel.as_raw().cast::<sys::ast_channel>()) }
+            .ok_or(HandsetCallIndicationProviderError::NotDriverChannel)?;
+        let call = controller_step(&shared.controller, |controller| {
+            controller.active_or_primary_call_by_pbx(state.pbx_id)
+        })
+        .ok_or(HandsetCallIndicationProviderError::Unavailable)?;
+        let registered = controller_step(&shared.controller, |controller| {
+            controller.is_registered(&call.device_id)
+        });
+        if !registered {
+            return Err(HandsetCallIndicationProviderError::NotRegistered);
+        }
+        let (phone_state, prompt) = match indication {
+            HandsetCallIndication::Busy => (PhoneCallState::Busy, None),
+            HandsetCallIndication::Congestion => (PhoneCallState::Congestion, None),
+            HandsetCallIndication::Unavailable => (PhoneCallState::Congestion, Some("Unavailable")),
+            HandsetCallIndication::InvalidNumber => (PhoneCallState::InvalidNumber, None),
+        };
+        self.phone
+            .try_send(PhoneCommand::new(
+                call.device_id.clone(),
+                PhoneCommandAction::SetCallState {
+                    call_id: call.sccp_id,
+                    state: phone_state,
+                },
+            ))
+            .map_err(|_| HandsetCallIndicationProviderError::HandsetRejected)?;
+        if let Some(text) = prompt {
+            self.phone
+                .try_send(PhoneCommand::new(
+                    call.device_id,
+                    PhoneCommandAction::DisplayPrompt {
+                        call_id: call.sccp_id,
+                        timeout_seconds: 0,
+                        text: text.into(),
+                    },
+                ))
+                .map_err(|_| HandsetCallIndicationProviderError::HandsetRejected)?;
+        }
+        Ok(())
     }
 }
 

@@ -153,6 +153,36 @@ async fn terminal_failure_states_reach_the_handset_with_a_visible_prompt() {
         )));
     }
 
+    // SCCP has no wire-level unavailable state.  A configured but unreachable
+    // destination retains the congestion/reorder state and replaces only its
+    // presentation with the more accurate call-scoped prompt.
+    handle
+        .send_confirmed(Command::new(
+            device_id.clone(),
+            CommandAction::DisplayPrompt {
+                call_id,
+                timeout_seconds: 5,
+                text: "Unavailable".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let frames = read_until_message(
+        &mut phone,
+        &mut decoder,
+        wire_id::DISPLAY_DYNAMIC_PROMPT_STATUS,
+    )
+    .await;
+    assert!(frames.iter().any(|frame| matches!(
+        ServerMessage::decode(frame.clone(), protocol),
+        Ok(ServerMessage::DisplayPrompt {
+            ref text,
+            timeout_seconds: 5,
+            call_reference: 77,
+            ..
+        }) if text == "Unavailable"
+    )));
+
     handle.shutdown().await.unwrap();
     task.await.unwrap().unwrap();
 }

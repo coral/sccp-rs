@@ -186,6 +186,10 @@ use crate::media::recording::{
     RecordingToggleRejection, ordered_recording_start, ordered_recording_stop,
     plan_recording_toggle,
 };
+use crate::pbx::call_indication::{
+    HandsetCallIndication, HandsetCallIndicationProvider, HandsetCallIndicationProviderError,
+    register_handset_call_indication_application,
+};
 use crate::pbx::channel_metadata::{ChannelMetadataError, validate_native_channel_metadata};
 use crate::pbx::handset_message::{
     HandsetMessageOperation, HandsetMessageProvider, HandsetMessageProviderError,

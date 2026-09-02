@@ -12,7 +12,8 @@ use crate::asterisk::boundary::{
 use crate::asterisk::native_channel::{
     audio_capability_mask, channel_private as private, destroy_channel_private,
     prepare_channel_private_teardown, private_owner, private_rtp, private_video_rtp,
-    reassign_private_owner, retain_private_rtp, retain_private_video_rtp, video_capability_mask,
+    reassign_private_owner, retain_private_rtp, retain_private_video_rtp, start_music_on_hold,
+    stop_music_on_hold, video_capability_mask,
 };
 use crate::asterisk::raw::system::device_state_raw;
 use crate::asterisk::sys;
@@ -37,6 +38,7 @@ const SCCP_DESCRIPTION: &[u8] = b"Modern Cisco SCCP channel driver\0";
 const SOURCE_FILE: &CStr = c"asterisk/direct/channel_driver.rs";
 const SOURCE_FUNCTION: &CStr = c"sccp_channel_driver";
 const CC_GENERIC_MONITOR: &CStr = c"generic";
+const MAX_MUSIC_ON_HOLD_CLASS_BYTES: usize = 128;
 
 static SCCP_TECH: StaticDescriptor<sys::ast_channel_tech> = StaticDescriptor::uninit();
 static RTP_GLUE: StaticDescriptor<sys::ast_rtp_glue> = StaticDescriptor::uninit();
@@ -373,6 +375,20 @@ unsafe extern "C" fn indicate(
             };
             return CallbackStatus::from_result(result.map_err(|_| ())).as_raw();
         }
+        if condition as u32 == sys::AST_CONTROL_HOLD {
+            let music_class = match music_on_hold_class(data, data_length) {
+                Ok(music_class) => music_class,
+                Err(()) => return -1,
+            };
+            return CallbackStatus::from_result(
+                start_music_on_hold(channel, music_class.as_deref()).map_err(|_| ()),
+            )
+            .as_raw();
+        }
+        if condition as u32 == sys::AST_CONTROL_UNHOLD {
+            stop_music_on_hold(channel);
+            return 0;
+        }
         let indication = match condition {
             -1 => ChannelIndication::StopTone,
             value if value as u32 == sys::AST_CONTROL_INCOMPLETE => ChannelIndication::Incomplete,
@@ -388,8 +404,6 @@ unsafe extern "C" fn indicate(
             value if value as u32 == sys::AST_CONTROL_CONGESTION => ChannelIndication::Congestion,
             value if value as u32 == sys::AST_CONTROL_PROGRESS => ChannelIndication::Progress,
             value if value as u32 == sys::AST_CONTROL_PROCEEDING => ChannelIndication::Proceeding,
-            value if value as u32 == sys::AST_CONTROL_HOLD => ChannelIndication::Hold,
-            value if value as u32 == sys::AST_CONTROL_UNHOLD => ChannelIndication::Unhold,
             value if value as u32 == sys::AST_CONTROL_CONNECTED_LINE => {
                 ChannelIndication::ConnectedLine
             }
@@ -398,6 +412,19 @@ unsafe extern "C" fn indicate(
         };
         CallbackStatus::from_result(indicate_channel(channel, indication).map_err(|_| ())).as_raw()
     })
+}
+
+fn music_on_hold_class(data: *const c_void, data_length: usize) -> Result<Option<CString>, ()> {
+    if data_length == 0 {
+        return Ok(None);
+    }
+    if data.is_null() || data_length > MAX_MUSIC_ON_HOLD_CLASS_BYTES + 1 {
+        return Err(());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), data_length) };
+    CStr::from_bytes_with_nul(bytes)
+        .map(|class| (!class.to_bytes().is_empty()).then(|| class.to_owned()))
+        .map_err(|_| ())
 }
 
 unsafe extern "C" fn send_digit_begin(channel: *mut sys::ast_channel, digit: c_char) -> c_int {

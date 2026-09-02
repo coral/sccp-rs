@@ -12,6 +12,7 @@
 //! [`party`], and [`channel_metadata`] contain narrow owned Asterisk channel
 //! operations and privacy-preserving metadata propagation.
 
+pub mod call_indication;
 pub mod channel_metadata;
 pub mod dialplan;
 pub mod handset_message;

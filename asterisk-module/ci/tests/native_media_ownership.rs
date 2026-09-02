@@ -738,6 +738,39 @@ fn successful_endpoint_presentation_publishes_native_ringing() {
 }
 
 #[test]
+fn pbx_hold_indications_drive_asterisk_moh_without_locally_holding_the_handset() {
+    let driver = source("src/asterisk/direct/channel_driver.rs");
+    let indicate = function_body(
+        &driver,
+        "unsafe extern \"C\" fn indicate(",
+        "fn music_on_hold_class(",
+    );
+    assert!(indicate.contains("sys::AST_CONTROL_HOLD"));
+    assert!(indicate.contains("start_music_on_hold(channel"));
+    assert!(indicate.contains("sys::AST_CONTROL_UNHOLD"));
+    assert!(indicate.contains("stop_music_on_hold(channel"));
+    assert!(!indicate.contains("ChannelIndication::Hold"));
+    assert!(!indicate.contains("ChannelIndication::Unhold"));
+
+    let control = source("src/asterisk/native/channel/control.rs");
+    let start = function_body(
+        &control,
+        "pub unsafe fn start_music_on_hold(",
+        "pub unsafe fn stop_music_on_hold(",
+    );
+    assert!(start.contains("sys::ast_moh_start"));
+    let stop = function_body(
+        &control,
+        "pub unsafe fn stop_music_on_hold(",
+        "pub unsafe fn uniqueid_in_use(",
+    );
+    assert!(stop.contains("sys::ast_moh_stop"));
+
+    let services = source("src/asterisk/runtime/services.rs");
+    assert!(!services.contains("handle_hold_or_resume(access, call_id, hold, true)"));
+}
+
+#[test]
 fn rust_native_format_contract_covers_audio_and_supported_video_families() {
     let allocation = source("src/asterisk/native/channel/allocation.rs");
     for format in [

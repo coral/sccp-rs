@@ -221,7 +221,7 @@ run_cycle() {
 		printf '\n[%s-bridges] sccp test bridges\n%s\n' \
 			"$cycle_label" "$bridge_result" >>"$cli_log"
 		case "$bridge_result" in
-		*'CONF-020 PASS scenarios=10'*) ;;
+		*'CONF-020 PASS scenarios=11'*) ;;
 		*)
 			printf 'live bridge harness failed during lifecycle cycle %s\n' \
 				"$cycle_label" >&2

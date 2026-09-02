@@ -15,9 +15,9 @@ use super::{
     execute_cleanup_effects, execute_effects, execute_effects_confirmed, execute_handset_effect,
     execute_one_effect, execute_remote_hangup_plan, expire_forwarding_entries,
     expire_no_answer_routes, expire_parking_attempts, handle_blf_event, handle_effect_error,
-    handle_hold_or_resume, handle_parking_event, handle_phone_event, mpsc, native_channel,
-    outbound_media_mode, publish_line, remove_channel, retry_blf, send_handset_call_state,
-    show_conference_list, take_pending_retrieval_by_pbx,
+    handle_parking_event, handle_phone_event, mpsc, native_channel, outbound_media_mode,
+    publish_line, remove_channel, retry_blf, send_handset_call_state, show_conference_list,
+    take_pending_retrieval_by_pbx,
 };
 use super::{
     ActiveSystemMessage, AmiConferenceCommand, AmiParkingCommand, AmiRecordingCommand, Arc,
@@ -249,19 +249,6 @@ pub async fn handle_runtime_call_signal(access: &Access, signal: RuntimeCallSign
                     &format!("unable to publish terminal handset state: {error}"),
                 );
             }
-        }
-        RuntimeCallSignalKind::Hold | RuntimeCallSignalKind::Unhold => {
-            let Some(call_id) = controller_step(&access.shared.controller, |controller| {
-                controller.active_call_id(signal.pbx_id).or_else(|| {
-                    controller
-                        .primary_call_by_pbx(signal.pbx_id)
-                        .map(|call| call.sccp_id)
-                })
-            }) else {
-                return;
-            };
-            let hold = matches!(signal.kind, RuntimeCallSignalKind::Hold);
-            handle_hold_or_resume(access, call_id, hold, true).await;
         }
         RuntimeCallSignalKind::VideoUpdate => {
             let actions = controller_step(&access.shared.controller, |controller| {

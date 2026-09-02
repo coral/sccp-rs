@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 use std::mem;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::time::Duration;
 
 use crate::asterisk::raw::handles::{Ao2Object, BorrowedChannelLock as ChannelLock};
@@ -80,6 +80,27 @@ pub unsafe fn start_tone_pair(
 
 pub unsafe fn stop_tone_pair(channel: NonNull<sys::ast_channel>) {
     unsafe { sys::ast_tonepair_stop(channel.as_ptr()) };
+}
+
+/// Start Asterisk-generated music on hold on this channel.
+///
+/// A missing or empty class lets Asterisk select the channel's configured
+/// class and then the system default, matching its built-in channel drivers.
+pub unsafe fn start_music_on_hold(
+    channel: NonNull<sys::ast_channel>,
+    class: Option<&CStr>,
+) -> Result<(), ChannelOperationError> {
+    let class = class
+        .filter(|class| !class.to_bytes().is_empty())
+        .map_or(ptr::null(), |class| class.as_ptr());
+    (unsafe { sys::ast_moh_start(channel.as_ptr(), class, ptr::null()) } == 0)
+        .then_some(())
+        .ok_or(ChannelOperationError::Rejected)
+}
+
+/// Stop Asterisk-generated music on hold on this channel.
+pub unsafe fn stop_music_on_hold(channel: NonNull<sys::ast_channel>) {
+    unsafe { sys::ast_moh_stop(channel.as_ptr()) };
 }
 
 pub unsafe fn uniqueid_in_use(uniqueid: &CStr) -> bool {

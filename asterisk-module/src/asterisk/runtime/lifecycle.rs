@@ -12,20 +12,21 @@ use super::{
     RuntimeCallSignalDeliveryResult, RuntimeCallSignalKind, RuntimeCallSignalQueue,
     RuntimeCalledPartyProvider, RuntimeChannelQueryProvider, RuntimeCodecPreferenceProvider,
     RuntimeControlProvider, RuntimeDeviceQueryProvider, RuntimeDirectoryProvider,
-    RuntimeFeatureControlProvider, RuntimeHandsetMessageProvider, RuntimeInventoryProvider,
-    RuntimeLineQueryProvider, RuntimeRecordingTriggerQueue, RuntimeRegistrationContexts,
-    RuntimeServiceProvider, RwLock, RwLockExt as _, Semaphore, Server, ServerConfig, ServerIngress,
-    Shared, SignalingQos, SignalingSocket, StagedMwiSubscriptions, StationIo, StationTransport,
-    SystemHostResolver, adapters, anonymous_hotline_definition, ast_log,
-    configured_mobility_button, controller_step, dial_terminator_digit, log_feature_store_error,
-    mobility_device_registered, mpsc, native_channel, publish_device_features,
-    publish_feature_changes, publish_line, raw, register_called_party_application,
-    register_channel_query, register_codec_preference_application, register_control_actions,
-    register_device_query, register_directory_http, register_feature_control_actions,
-    register_handset_message_application, register_inventory_actions, register_line_query,
-    register_runtime_status_actions, register_service_control_actions, run_call_signals,
-    run_events, shutdown_conferences, shutdown_one_way_microphones, shutdown_remote_hangups,
-    uninstall_blf, uninstall_device_blf,
+    RuntimeFeatureControlProvider, RuntimeHandsetCallIndicationProvider,
+    RuntimeHandsetMessageProvider, RuntimeInventoryProvider, RuntimeLineQueryProvider,
+    RuntimeRecordingTriggerQueue, RuntimeRegistrationContexts, RuntimeServiceProvider, RwLock,
+    RwLockExt as _, Semaphore, Server, ServerConfig, ServerIngress, Shared, SignalingQos,
+    SignalingSocket, StagedMwiSubscriptions, StationIo, StationTransport, SystemHostResolver,
+    adapters, anonymous_hotline_definition, ast_log, configured_mobility_button, controller_step,
+    dial_terminator_digit, log_feature_store_error, mobility_device_registered, mpsc,
+    native_channel, publish_device_features, publish_feature_changes, publish_line, raw,
+    register_called_party_application, register_channel_query,
+    register_codec_preference_application, register_control_actions, register_device_query,
+    register_directory_http, register_feature_control_actions,
+    register_handset_call_indication_application, register_handset_message_application,
+    register_inventory_actions, register_line_query, register_runtime_status_actions,
+    register_service_control_actions, run_call_signals, run_events, shutdown_conferences,
+    shutdown_one_way_microphones, shutdown_remote_hangups, uninstall_blf, uninstall_device_blf,
 };
 use crate::call::parking::ParkingEventSource as _;
 use crate::media::encryption::AudioEncryptionAdmissions;
@@ -673,6 +674,14 @@ impl Module {
             dialplan,
         )
         .map_err(|error| format!("unable to register handset-message application: {error}"))?;
+        let handset_call_indication_registration = register_handset_call_indication_application(
+            RuntimeHandsetCallIndicationProvider {
+                shared: Arc::downgrade(&shared),
+                phone: phone.clone(),
+            },
+            dialplan,
+        )
+        .map_err(|error| format!("unable to register call-indication application: {error}"))?;
         *shared.dialplan_registrations.lock_unpoisoned() = vec![
             device_query_registration,
             line_query_registration,
@@ -680,6 +689,7 @@ impl Module {
             codec_preference_registration,
             called_party_registration,
             handset_message_registration,
+            handset_call_indication_registration,
         ];
         let handle = runtime.handle().clone();
         let server_task = runtime.spawn(async move {
