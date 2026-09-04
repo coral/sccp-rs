@@ -91,6 +91,8 @@ pub struct DeviceConfig {
     pub soft_key_profile: String,
     /// Initial mutable feature state and feature availability.
     pub feature_defaults: DeviceFeatureDefaults,
+    /// Recurring weekly DND policy in configuration order.
+    pub dnd_schedules: Vec<DndSchedule>,
     pub parking: DeviceParkingConfig,
     pub conference: DeviceConferenceConfig,
     pub call_ui: DeviceCallUiConfig,

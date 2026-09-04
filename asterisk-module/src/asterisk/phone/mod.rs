@@ -72,16 +72,19 @@ pub use conference::{
     remove_conference_participant, set_conference_participant_moderator,
     set_conference_participant_muted, show_conference_list,
 };
-pub use features::{
-    RuntimeDndMutation, RuntimeDndMutationError, execute_dnd_mutation, expire_forwarding_entries,
-    log_feature_store_error, publish_ami_event, publish_device_features, publish_feature_changes,
-    update_device_features_locked,
+pub(super) use features::{
+    RuntimeDndMutation, RuntimeDndMutationError, execute_dnd_mutation,
+    execute_dnd_mutation_serialized,
 };
 use features::{
     cancel_forwarding_entry_for_call, cancel_forwarding_entry_for_device, commit_forwarding_entry,
     forwarding_entry_exists, handle_dnd_button, handle_feature_button, handle_feature_soft_key,
     handle_forwarding_backspace, handle_forwarding_digit, handle_recording_button,
     handle_voicemail_soft_key, replace_and_commit_forwarding_entry, replace_forwarding_entry,
+};
+pub use features::{
+    expire_forwarding_entries, log_feature_store_error, publish_ami_event, publish_device_features,
+    publish_feature_changes, update_device_features_locked,
 };
 pub use forwarding::{cancel_no_answer_timer, clear_no_answer_route, expire_no_answer_routes};
 pub use mobility::{configured_mobility_button, mobility_device_registered};

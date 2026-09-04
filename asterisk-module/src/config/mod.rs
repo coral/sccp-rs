@@ -42,9 +42,11 @@
 mod canonical;
 pub mod convergence;
 mod defaults;
+mod dnd_schedule;
 mod inheritance;
 mod model;
 mod parsing;
+pub use dnd_schedule::*;
 pub use model::*;
 pub mod provider;
 pub mod realtime;
@@ -734,6 +736,10 @@ enum DeviceOption {
     /// Sets the device's initial do-not-disturb mode.
     /// Determines how incoming calls are handled before runtime changes.
     Dnd,
+    /// Adds a recurring weekly do-not-disturb window.
+    /// The start is inclusive, the end is exclusive, and overnight windows
+    /// remain anchored to the configured start day.
+    DndSchedule,
     #[serde(
         rename = "privacy_feature",
         alias = "private",
@@ -1082,6 +1088,8 @@ struct DeviceSectionDraft<'a> {
     forward_no_answer: Option<Option<ForwardingDestination>>,
     dnd_enabled: Option<bool>,
     dnd: Option<DndMode>,
+    dnd_schedules: Vec<DndSchedule>,
+    dnd_schedule_cleared: bool,
     privacy_enabled: Option<bool>,
     privacy: Option<bool>,
     parking_enabled: Option<bool>,

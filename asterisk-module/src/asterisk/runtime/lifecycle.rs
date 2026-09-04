@@ -18,15 +18,16 @@ use super::{
     RwLockExt as _, Semaphore, Server, ServerConfig, ServerIngress, Shared, SignalingQos,
     SignalingSocket, StagedMwiSubscriptions, StationIo, StationTransport, SystemHostResolver,
     adapters, anonymous_hotline_definition, ast_log, configured_mobility_button, controller_step,
-    dial_terminator_digit, log_feature_store_error, mobility_device_registered, mpsc,
-    native_channel, publish_device_features, publish_feature_changes, publish_line, raw,
-    register_called_party_application, register_channel_query,
-    register_codec_preference_application, register_control_actions, register_device_query,
-    register_directory_http, register_feature_control_actions,
+    dial_terminator_digit, install_reloaded_dnd_schedules, log_feature_store_error,
+    mobility_device_registered, mpsc, native_channel, publish_device_features,
+    publish_feature_changes, publish_line, raw, register_called_party_application,
+    register_channel_query, register_codec_preference_application, register_control_actions,
+    register_device_query, register_directory_http, register_feature_control_actions,
     register_handset_call_indication_application, register_handset_message_application,
     register_inventory_actions, register_line_query, register_runtime_status_actions,
-    register_service_control_actions, run_call_signals, run_events, shutdown_conferences,
-    shutdown_one_way_microphones, shutdown_remote_hangups, uninstall_blf, uninstall_device_blf,
+    register_service_control_actions, run_call_signals, run_dnd_schedule_tick, run_events,
+    shutdown_conferences, shutdown_one_way_microphones, shutdown_remote_hangups, uninstall_blf,
+    uninstall_device_blf,
 };
 use crate::call::parking::ParkingEventSource as _;
 use crate::media::encryption::AudioEncryptionAdmissions;
@@ -449,6 +450,10 @@ impl Module {
         };
         let definitions = config.device_definitions();
         let feature_store = FeatureStore::new(AsteriskDatabase::new());
+        let dnd_schedule_store =
+            crate::state::dnd_schedule::DndScheduleStore::new(AsteriskDatabase::new());
+        let dnd_schedules = super::DndScheduleRegistry::load(&config, &dnd_schedule_store)
+            .map_err(|error| format!("unable to restore configured DND schedules: {error}"))?;
         let feature_states = feature_store
             .load_configuration(&config)
             .map_err(|error| format!("unable to restore configured feature state: {error}"))?;
@@ -542,6 +547,9 @@ impl Module {
             )),
             feature_store,
             feature_mutations: Mutex::new(()),
+            dnd_schedule_mutations: Mutex::new(()),
+            dnd_schedule_store,
+            dnd_schedules: Mutex::new(dnd_schedules),
             registration_contexts: Mutex::new(RuntimeRegistrationContexts::new()),
             system_message: Mutex::new(None),
             control_requests: control_requests_tx.clone(),
@@ -717,6 +725,7 @@ impl Module {
             phone,
             shared,
         };
+        run_dnd_schedule_tick(&access);
         let event_access = access.clone();
         let signal_access = access.clone();
         let event_task = runtime.spawn(async move {
@@ -1030,6 +1039,11 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
         .config_provider
         .refresh()
         .map_err(|error| error.to_string())?;
+    let next_dnd_schedules =
+        super::DndScheduleRegistry::load(&next, &access.shared.dnd_schedule_store)
+            .map_err(|error| format!("unable to stage reloaded DND schedules: {error}"))?;
+    let next_configured_dnd_schedules = super::DndScheduleRegistry::from_configuration(&next)
+        .map_err(|error| format!("unable to stage configured DND schedules: {error}"))?;
     let previous = access.config();
     let plan = ReloadPlan::build(&previous, &next);
     selection
@@ -1175,6 +1189,7 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
             publish_feature_changes(access, &device, previous, current);
         }
     }
+    install_reloaded_dnd_schedules(access, next_dnd_schedules, &next_configured_dnd_schedules);
     if let Err(error) = access.shared.config_provider.activated(&access.config()) {
         ast_log(
             LogLevel::Warning,

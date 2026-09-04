@@ -202,6 +202,7 @@ pub async fn expire_forwarding_entries(access: &Access, now: Instant) {
 
 pub enum RuntimeDndMutation {
     Set(DndMode),
+    Scheduled(DndMode),
     SoftKey,
     Button(u32),
 }
@@ -224,6 +225,19 @@ pub fn execute_dnd_mutation(
     device_id: &DeviceId,
     request: RuntimeDndMutation,
 ) -> Result<RuntimeDndMutationOutcome, RuntimeDndMutationError> {
+    let _schedule_guard = access
+        .shared
+        .dnd_schedule_mutations
+        .lock()
+        .map_err(|_| RuntimeDndMutationError::Unavailable)?;
+    execute_dnd_mutation_serialized(access, device_id, request)
+}
+
+pub fn execute_dnd_mutation_serialized(
+    access: &Access,
+    device_id: &DeviceId,
+    request: RuntimeDndMutation,
+) -> Result<RuntimeDndMutationOutcome, RuntimeDndMutationError> {
     let _feature_guard = access
         .shared
         .feature_mutations
@@ -234,13 +248,16 @@ pub fn execute_dnd_mutation(
         .devices
         .get(device_id)
         .ok_or(RuntimeDndMutationError::DeviceNotFound)?;
-    if !device.feature_defaults.dnd_enabled {
+    if !device.feature_defaults.dnd_enabled && !matches!(request, RuntimeDndMutation::Scheduled(_))
+    {
         return Err(RuntimeDndMutationError::FeatureDisabled);
     }
     let defaults = configured_feature_state(&config, device_id)
         .ok_or(RuntimeDndMutationError::DeviceNotFound)?;
     let mutation = match request {
-        RuntimeDndMutation::Set(mode) => DndMutation::Set(mode),
+        RuntimeDndMutation::Set(mode) | RuntimeDndMutation::Scheduled(mode) => {
+            DndMutation::Set(mode)
+        }
         RuntimeDndMutation::SoftKey => DndMutation::Toggle(default_button_mode(defaults.dnd)),
         RuntimeDndMutation::Button(instance) => DndMutation::Toggle(
             config

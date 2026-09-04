@@ -17,7 +17,8 @@
 //!
 //! The module registers exactly `sccp version`, `sccp show devices`,
 //! `sccp show lines`, `sccp show channels`, `sccp reload`, `sccp reset <device|all>`,
-//! `sccp restart <device|all>`, bounded DND/message/call controls, and
+//! `sccp restart <device|all>`, bounded DND/message/call controls, recurring
+//! DND schedule show/add/remove/clear/reset controls, and
 //! `sccp set forwarding <device> <line> <all|busy|noanswer>
 //! <destination|off>`. The three show commands provide bounded, deterministic
 //! list and detail views with completion for their typed selectors. Mutating

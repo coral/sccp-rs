@@ -82,11 +82,11 @@ The device `description` is shown in the primary line's upper-right station
 header and may contain at most 39 bytes. A line button's `label` remains
 independent and is shown beside that button.
 
-Other repeatable settings, including codec operations, channel variables, and
-feature defaults, use the same indexed form. Controllers should emit fixed-
-width, monotonically increasing indexes (`0001`, `0002`, and so on) for stable
-diffs. `GET` returns standard ARI `ConfigTuple` values and preserves the
-indexed names.
+Other repeatable settings, including codec operations, channel variables,
+feature defaults, and DND schedules (`dnd_schedule.0001`), use the same indexed
+form. Controllers should emit fixed-width, monotonically increasing indexes
+(`0001`, `0002`, and so on) for stable diffs. `GET` returns standard ARI
+`ConfigTuple` values and preserves the indexed names.
 
 ARI `PUT` patches a copy of the existing object: omitted attributes remain
 unchanged. Set an indexed attribute such as `button.0002`, `allow.0001`, or

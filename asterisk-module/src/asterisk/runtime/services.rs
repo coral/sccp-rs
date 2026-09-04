@@ -16,8 +16,8 @@ use super::{
     execute_one_effect, execute_remote_hangup_plan, expire_forwarding_entries,
     expire_no_answer_routes, expire_parking_attempts, handle_blf_event, handle_effect_error,
     handle_parking_event, handle_phone_event, mpsc, native_channel, outbound_media_mode,
-    publish_line, remove_channel, retry_blf, send_handset_call_state, show_conference_list,
-    take_pending_retrieval_by_pbx,
+    publish_line, remove_channel, retry_blf, run_dnd_schedule_tick, send_handset_call_state,
+    show_conference_list, take_pending_retrieval_by_pbx,
 };
 use super::{
     ActiveSystemMessage, AmiConferenceCommand, AmiParkingCommand, AmiRecordingCommand, Arc,
@@ -66,6 +66,8 @@ pub async fn run_events(
     let mut recording_sessions = RuntimeRecordings::default();
     let mut deadlines = tokio::time::interval(Duration::from_millis(100));
     deadlines.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dnd_schedule = tokio::time::interval(Duration::from_secs(1));
+    dnd_schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             event = events.recv() => {
@@ -121,6 +123,9 @@ pub async fn run_events(
                 expire_no_answer_routes(&access, Instant::now()).await;
                 expire_parking_attempts(&access, Instant::now()).await;
                 prune_recording_sessions(&access, &mut recording_sessions).await;
+            }
+            _ = dnd_schedule.tick() => {
+                run_dnd_schedule_tick(&access);
             }
         }
     }

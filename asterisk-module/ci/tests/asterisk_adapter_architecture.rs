@@ -290,6 +290,7 @@ fn every_rust_defined_c_callback_is_an_actual_asterisk_entrypoint() {
             ("direct/cli.rs", "cli_reset"),
             ("direct/cli.rs", "cli_restart"),
             ("direct/cli.rs", "cli_dnd"),
+            ("direct/cli.rs", "cli_dnd_schedule"),
             ("direct/cli.rs", "cli_message"),
             ("direct/cli.rs", "cli_answer"),
             ("direct/cli.rs", "cli_end"),

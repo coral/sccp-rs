@@ -416,7 +416,13 @@ fn is_repeatable(kind: ConfigOverlayKind, normalized: &str) -> bool {
         || kind == ConfigOverlayKind::Device
             && matches!(
                 normalized,
-                "deny" | "permit" | "permithost" | "featuredefault" | "line" | "button"
+                "deny"
+                    | "permit"
+                    | "permithost"
+                    | "featuredefault"
+                    | "dndschedule"
+                    | "line"
+                    | "button"
             )
 }
 
@@ -685,6 +691,33 @@ mod tests {
                 ("allow", "ulaw"),
                 ("permit", "192.0.2.0/24"),
                 ("allow", "g722"),
+            ]
+        );
+    }
+
+    #[test]
+    fn codec_orders_indexed_dnd_schedules() {
+        let overlay = object_overlay(
+            ConfigOverlayKind::Device,
+            &OrderedSorceryObject::new(
+                "SEP001122334455",
+                vec![
+                    field("dnd_schedule.0010", "23:00-09:00, fri-sun, reject"),
+                    field("dnd_schedule.0001", "22:00-07:00, mon-thu, silent"),
+                ],
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            overlay
+                .values
+                .iter()
+                .map(|field| (field.key.as_str(), field.value.as_deref().unwrap()))
+                .collect::<Vec<_>>(),
+            [
+                ("dnd_schedule", "22:00-07:00, mon-thu, silent"),
+                ("dnd_schedule", "23:00-09:00, fri-sun, reject"),
             ]
         );
     }

@@ -170,6 +170,11 @@ forward_busy = none
 forward_no_answer = none
 dnd_feature = yes
 dnd = off
+; Optional recurring DND windows use the Asterisk server's local timezone.
+; Each window is start-end, days, mode. Overnight windows belong to the day
+; on which they start. Keep these commented until scheduling is wanted.
+; dnd_schedule = 22:00-07:00, mon-thu, reject
+; dnd_schedule = 23:00-09:00, fri-sun, silent
 privacy_feature = yes
 privacy = no
 ; Open the phone's Placed Calls application for Redial instead of immediately

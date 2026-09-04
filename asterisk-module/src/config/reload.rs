@@ -349,9 +349,6 @@ fn station_configuration_changed(
     next: &ModuleConfig,
     device: &DeviceId,
 ) -> bool {
-    if previous.devices.get(device) != next.devices.get(device) {
-        return true;
-    }
     let previous_device = previous
         .devices
         .get(device)
@@ -360,6 +357,16 @@ fn station_configuration_changed(
         .devices
         .get(device)
         .expect("device exists in both configurations");
+    // DND schedules are enforced by the module and do not alter the station
+    // definition. A schedule-only reload must therefore leave the SCCP session
+    // intact while the runtime scheduler reconciles the new calendar policy.
+    let mut previous_station = previous_device.clone();
+    let mut next_station = next_device.clone();
+    previous_station.dnd_schedules.clear();
+    next_station.dnd_schedules.clear();
+    if previous_station != next_station {
+        return true;
+    }
     if previous
         .soft_key_profiles
         .get(&previous_device.soft_key_profile)
@@ -523,6 +530,24 @@ mod tests {
             line = 1002
             "#,
         )
+    }
+
+    #[test]
+    fn dnd_schedule_only_change_does_not_reconnect_the_station() {
+        let previous = two_devices("", "");
+        let mut next = previous.clone();
+        let device = DeviceId::new("SEP001122334455").unwrap();
+        next.devices
+            .get_mut(&device)
+            .unwrap()
+            .dnd_schedules
+            .push(crate::config::DndSchedule::parse("22:00-07:00, *, reject").unwrap());
+
+        let plan = ReloadPlan::build(&previous, &next);
+
+        assert!(plan.changed.is_empty());
+        assert!(plan.added.is_empty());
+        assert!(plan.removed.is_empty());
     }
 
     fn one_line(mailbox: &str) -> ModuleConfig {

@@ -4,10 +4,10 @@ use crate::asterisk::boundary::{MutexExt, RwLockExt};
 use crate::asterisk::phone::{
     RuntimeDndMutation, RuntimeDndMutationError, begin_parking_retrieval, cancel_no_answer_timer,
     clear_no_answer_route, configured_mobility_button, execute_dnd_mutation,
-    expire_forwarding_entries, expire_no_answer_routes, expire_parking_attempts,
-    handle_parking_event, handle_phone_event, log_feature_store_error, mobility_device_registered,
-    publish_ami_event, publish_device_features, publish_feature_changes,
-    remove_conference_participant, set_conference_participant_moderator,
+    execute_dnd_mutation_serialized, expire_forwarding_entries, expire_no_answer_routes,
+    expire_parking_attempts, handle_parking_event, handle_phone_event, log_feature_store_error,
+    mobility_device_registered, publish_ami_event, publish_device_features,
+    publish_feature_changes, remove_conference_participant, set_conference_participant_moderator,
     set_conference_participant_muted, show_conference_list, update_device_features_locked,
 };
 use crate::asterisk::{
@@ -93,6 +93,7 @@ mod backend;
 mod channel;
 mod cli;
 mod diagnostics;
+mod dnd_schedule;
 mod lifecycle;
 mod management;
 mod media;
@@ -100,6 +101,11 @@ mod native_support;
 mod presence;
 mod recording;
 mod services;
+
+pub(super) use dnd_schedule::{
+    DndScheduleRegistry, complete_configured_dnd_device, execute_dnd_schedule_cli,
+};
+use dnd_schedule::{install_reloaded_dnd_schedules, run_dnd_schedule_tick};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct AudioFraming {

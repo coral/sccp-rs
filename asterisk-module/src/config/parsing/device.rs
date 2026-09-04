@@ -142,6 +142,32 @@ pub(in crate::config) fn parse_device(
                 )?;
                 continue;
             }
+            DeviceOption::DndSchedule => {
+                if raw.trim().eq_ignore_ascii_case("none") {
+                    if draft.dnd_schedule_cleared || !draft.dnd_schedules.is_empty() {
+                        return Err(invalid_option(
+                            &diagnostic,
+                            raw,
+                            "none as the sole dnd_schedule value",
+                            false,
+                        ));
+                    }
+                    draft.dnd_schedule_cleared = true;
+                    continue;
+                }
+                if draft.dnd_schedule_cleared {
+                    return Err(invalid_option(
+                        &diagnostic,
+                        raw,
+                        "schedule entries without a dnd_schedule = none value",
+                        false,
+                    ));
+                }
+                let schedule = DndSchedule::parse(raw)
+                    .map_err(|error| invalid_option(&diagnostic, raw, &error.to_string(), false))?;
+                draft.dnd_schedules.push(schedule);
+                continue;
+            }
             DeviceOption::PrivacyFeature => {
                 set_once(
                     &mut draft.privacy_enabled,
@@ -524,6 +550,15 @@ pub(in crate::config) fn parse_device(
             .to_owned();
     }
 
+    validate_dnd_schedules(&draft.dnd_schedules).map_err(|error| {
+        invalid_option(
+            section.diagnostic_key("dnd_schedule"),
+            "<schedule list>",
+            &error.to_string(),
+            false,
+        )
+    })?;
+
     let line_names: Vec<_> = draft
         .buttons
         .iter()
@@ -688,6 +723,7 @@ pub(in crate::config) fn parse_device(
         channel_variables: draft.channel_variables,
         soft_key_profile: resolved_soft_key_profile,
         feature_defaults,
+        dnd_schedules: draft.dnd_schedules,
         parking,
         conference,
         call_ui,

@@ -2162,6 +2162,81 @@ fn feature_and_pickup_defaults_follow_template_merge_semantics() {
 }
 
 #[test]
+fn dnd_schedules_parse_in_order_and_child_lists_replace_parent_lists() {
+    let input = r#"
+            [general]
+            advertised_address = 192.0.2.10
+
+            [device-base](!)
+            type = device
+            dnd_schedule = 22:00-07:00, mon-thu, reject
+            dnd_schedule = 23:00-09:00, fri-sun, silent
+
+            [SEP001122334455](device-base)
+            dnd_feature = no
+            dnd_schedule = 12:00-13:00, mon&wed&fri, silent
+            dnd_schedule = 18:00-19:00, tue&thu, reject
+            button = line, 1001
+
+            [SEP112233445566](device-base)
+            dnd_schedule = none
+            button = line, 1001
+
+            [1001]
+            type = line
+            context = from-sccp
+        "#;
+
+    let config = ModuleConfig::parse(input).unwrap();
+    let replaced = &config.devices[&DeviceId::new("SEP001122334455").unwrap()];
+    assert!(!replaced.feature_defaults.dnd_enabled);
+    assert_eq!(
+        replaced
+            .dnd_schedules
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "12:00-13:00, mon&wed&fri, silent",
+            "18:00-19:00, tue&thu, reject",
+        ]
+    );
+    let cleared = &config.devices[&DeviceId::new("SEP112233445566").unwrap()];
+    assert!(cleared.dnd_schedules.is_empty());
+}
+
+#[test]
+fn dnd_schedule_configuration_rejects_mixed_none_overlap_and_excess_entries() {
+    let device = "[SEP001122334455]\ntype=device\nbutton=line, 1001\n";
+    let line = "[1001]\ntype=line\ncontext=from-sccp\n";
+    for schedules in [
+        "dnd_schedule=none\ndnd_schedule=22:00-07:00, *, reject\n".to_owned(),
+        concat!(
+            "dnd_schedule=22:00-07:00, mon, reject\n",
+            "dnd_schedule=06:59-08:00, tue, silent\n"
+        )
+        .to_owned(),
+        (0..=MAX_DND_SCHEDULES)
+            .map(|minute| {
+                format!(
+                    "dnd_schedule={:02}:{:02}-{:02}:{:02}, mon, silent\n",
+                    minute / 60,
+                    minute % 60,
+                    (minute + 1) / 60,
+                    (minute + 1) % 60,
+                )
+            })
+            .collect::<String>(),
+    ] {
+        let input = format!("[general]\nadvertised_address=192.0.2.10\n{device}{schedules}{line}");
+        assert!(matches!(
+            ModuleConfig::parse(&input),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+}
+
+#[test]
 fn parking_and_conference_defaults_are_fully_normalized() {
     let config = ModuleConfig::parse(CONFIG).unwrap();
     let device_id = DeviceId::new("SEP001122334455").unwrap();

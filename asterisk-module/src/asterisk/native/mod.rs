@@ -17,6 +17,9 @@ pub mod recording;
 pub mod registry;
 pub mod sorcery;
 pub mod system;
+mod timing;
+
+pub(super) use timing::{AsteriskTiming, AsteriskTimingError};
 
 #[cfg(feature = "telemetry")]
 pub(super) fn pbx_uuid() -> Option<uuid::Uuid> {

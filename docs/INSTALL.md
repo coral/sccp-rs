@@ -289,6 +289,10 @@ the first phone working, start with one device, one line button, and one line
 section; add shared appearances and features after basic calling and audio are
 verified.
 
+Optional recurring quiet hours can set the phone's DND mode automatically.
+See [DND scheduling](DND_SCHEDULING.md) for the device configuration syntax,
+server-timezone behavior, validation rules, and persistent CLI overrides.
+
 ## 5. Add dialplan routing
 
 Calls made from the phone enter the `context` configured on its line. That
