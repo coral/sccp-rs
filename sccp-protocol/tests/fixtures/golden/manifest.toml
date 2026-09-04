@@ -144,10 +144,11 @@ sha256 = "c0342561ddd571d593b649405db90105b5b27eb4d5e9ba8854b3503af928c58a"
 handset_observation = "displayed"
 extraction = { tool = "sccp_fixtures_tshark", version = 1, tcp_stream = 1, direction_ordinal = 7 }
 sanitization = [
-  { field = "line_number", replacement = "1001" },
-  { field = "display_name", replacement = "1001" },
+  { field = "directory_number", replacement = "1001" },
+  { field = "fully_qualified_display_name", replacement = "1001" },
+  { field = "display_label", replacement = "1001" },
 ]
-expect = { result = "decoded", canonical = "exact", semantic = { type = "line_status", instance = 1, number = "1001", display_name = "1001" } }
+expect = { result = "decoded", canonical = "exact", semantic = { type = "line_status", instance = 1, directory_number = "1001", fully_qualified_display_name = "1001", display_label = "1001" } }
 
 [[fixture]]
 name = "open_receive_7961_v22_accepted_wildcard"

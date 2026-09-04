@@ -432,8 +432,9 @@ fn station_ui_response_fixtures_cover_static_and_dynamic_layouts() {
             112,
             ServerMessage::LineStatus {
                 instance: 1,
-                number: "1001".into(),
-                display_name: "Alice".into(),
+                directory_number: "1001".into(),
+                fully_qualified_display_name: "Alice".into(),
+                display_label: "Alice".into(),
             },
         ),
         (
@@ -443,8 +444,9 @@ fn station_ui_response_fixtures_cover_static_and_dynamic_layouts() {
             28,
             ServerMessage::LineStatus {
                 instance: 1,
-                number: "1001".into(),
-                display_name: "Alice".into(),
+                directory_number: "1001".into(),
+                fully_qualified_display_name: "Alice".into(),
+                display_label: "Alice".into(),
             },
         ),
         (

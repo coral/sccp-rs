@@ -78,6 +78,10 @@ number.
 }
 ```
 
+The device `description` is shown in the primary line's upper-right station
+header and may contain at most 39 bytes. A line button's `label` remains
+independent and is shown beside that button.
+
 Other repeatable settings, including codec operations, channel variables, and
 feature defaults, use the same indexed form. Controllers should emit fixed-
 width, monotonically increasing indexes (`0001`, `0002`, and so on) for stable

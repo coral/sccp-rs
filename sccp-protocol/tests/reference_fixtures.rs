@@ -243,8 +243,9 @@ enum SemanticExpectation {
     },
     LineStatus {
         instance: u32,
-        number: String,
-        display_name: String,
+        directory_number: String,
+        fully_qualified_display_name: String,
+        display_label: String,
     },
     CapabilitiesUpdate {
         variant: CapabilityVariant,
@@ -399,9 +400,16 @@ fn validate_live_privacy(fixture: &Fixture) {
     let sanitized = !fixture.sanitization.is_empty();
     match semantic {
         SemanticExpectation::CapabilitiesUpdate { .. } => assert!(!sanitized),
-        SemanticExpectation::LineStatus { number, .. } => {
+        SemanticExpectation::LineStatus {
+            directory_number,
+            fully_qualified_display_name,
+            display_label,
+            ..
+        } => {
             assert!(sanitized);
-            assert_eq!(number, "1001");
+            assert_eq!(directory_number, "1001");
+            assert_eq!(fully_qualified_display_name, "1001");
+            assert_eq!(display_label, "1001");
         }
         SemanticExpectation::OpenReceiveChannel {
             source_address,
@@ -971,17 +979,29 @@ fn assert_semantic(
         (
             DecodedMessage::Server(ServerMessage::LineStatus {
                 instance: actual_instance,
-                number: actual_number,
-                display_name: actual_display,
+                directory_number: actual_number,
+                fully_qualified_display_name: actual_display_name,
+                display_label: actual_display_label,
             }),
             SemanticExpectation::LineStatus {
                 instance,
-                number,
-                display_name,
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
             },
         ) => assert_eq!(
-            (actual_instance, actual_number, actual_display),
-            (instance, number, display_name),
+            (
+                actual_instance,
+                actual_number,
+                actual_display_name,
+                actual_display_label,
+            ),
+            (
+                instance,
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
+            ),
             "{name} line status semantics"
         ),
         (

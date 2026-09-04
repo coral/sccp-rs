@@ -185,7 +185,7 @@ impl ObservationSink {
         };
         let Some(observation_id) = self
             .next_observation_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .ok()

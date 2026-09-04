@@ -84,7 +84,7 @@ impl TelemetryReporter {
         let host_uuid = raw::pbx_uuid()?;
         let host_hash: [u8; 32] = Sha256::digest(host_uuid.as_bytes()).into();
         let generation = NEXT_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .ok()?;

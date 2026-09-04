@@ -223,6 +223,8 @@ silencesuppression = no
 ; allow = ulaw, alaw, g722
 
 [SEP001122334455](standard-device)
+; The primary line's upper-right header (39 bytes maximum); independent of its
+; button label.
 description = Reception phone
 ; Buttons are provisioned in the order listed. Supported kinds are line,
 ; speed_dial, blf, feature, service, addon, and empty.

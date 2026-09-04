@@ -720,6 +720,8 @@ impl Default for SoftKeyProfile {
     }
 }
 
+const MAX_STATION_HEADER_BYTES: usize = 39;
+
 /// Complete phone-facing configuration for one station.
 ///
 /// Call [`Self::validate`] before starting or reconfiguring a server. A valid
@@ -729,6 +731,10 @@ impl Default for SoftKeyProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceDefinition {
     pub id: DeviceId,
+    /// Station identity shown in the primary line's idle-screen header.
+    ///
+    /// An empty value falls back to the primary line's directory number.
+    /// Nonempty values may contain at most 39 bytes and no control characters.
     pub description: String,
     pub transport: StationTransportRequirement,
     /// Socket marking selected after this station identifies itself. `None`
@@ -847,6 +853,15 @@ impl DeviceDefinition {
         // station/sidecar layouts are sent as offset chunks; retain the
         // library's validated logical-layout ceiling independently.
         const MAX_BUTTONS: usize = 256;
+
+        if self.description.len() > MAX_STATION_HEADER_BYTES
+            || self.description.chars().any(char::is_control)
+        {
+            return Err(CodecError::InvalidDefinition(format!(
+                "device {} has an invalid station-header description",
+                self.id
+            )));
+        }
 
         self.soft_keys.validate()?;
         if let Some(signaling_qos) = self.signaling_qos {
@@ -1601,6 +1616,33 @@ mod tests {
                 definition_with_label(label).validate(),
                 Err(CodecError::InvalidDefinition(message))
                     if message.contains("invalid recording-button label")
+            ));
+        }
+    }
+
+    #[test]
+    fn station_definition_enforces_station_header_text_contract() {
+        let definition_with_description = |description: String| DeviceDefinition {
+            id: DeviceId::new("SEP001122334455").unwrap(),
+            description,
+            transport: StationTransportRequirement::Either,
+            signaling_qos: None,
+            buttons: vec![line_button(1, "1001")],
+            soft_keys: SoftKeyProfile::default(),
+            ui: StationUiPolicy::default(),
+        };
+
+        for description in [String::new(), "D".repeat(MAX_STATION_HEADER_BYTES)] {
+            definition_with_description(description).validate().unwrap();
+        }
+        for description in [
+            "bad\nheader".into(),
+            "D".repeat(MAX_STATION_HEADER_BYTES + 1),
+        ] {
+            assert!(matches!(
+                definition_with_description(description).validate(),
+                Err(CodecError::InvalidDefinition(message))
+                    if message.contains("invalid station-header description")
             ));
         }
     }

@@ -3795,8 +3795,9 @@ impl ServerMessage {
                 let value: WireLineStatus = decode(frame.message_id, p)?;
                 Ok(Self::LineStatus {
                     instance: value.line_instance,
-                    number: value.directory_number.text()?,
-                    display_name: value.display_name.text()?,
+                    directory_number: value.directory_number.text()?,
+                    fully_qualified_display_name: value.display_name.text()?,
+                    display_label: value.display_label.text()?,
                 })
             }
             wire_id::LINE_STAT_DYNAMIC => decode_dynamic_line_status(p),
@@ -4760,14 +4761,16 @@ impl ServerMessage {
             }
             Self::LineStatus {
                 instance,
-                number,
-                display_name,
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
             } => {
                 if session.uses_dynamic_general_ui() {
                     p = encode_dynamic_line_status(
                         *instance,
-                        number,
-                        display_name,
+                        directory_number,
+                        fully_qualified_display_name,
+                        display_label,
                         legacy_code_page,
                     )?;
                     wire_id::LINE_STAT_DYNAMIC
@@ -4779,18 +4782,18 @@ impl ServerMessage {
                             directory_number: WireFixedText::new(
                                 wire_id::LINE_STAT,
                                 "line number",
-                                number,
+                                directory_number,
                             )?,
                             display_name: WireFixedText::new_station(
                                 wire_id::LINE_STAT,
                                 "display name",
-                                display_name,
+                                fully_qualified_display_name,
                                 legacy_code_page,
                             )?,
                             display_label: WireFixedText::new_station(
                                 wire_id::LINE_STAT,
                                 "line label",
-                                display_name,
+                                display_label,
                                 legacy_code_page,
                             )?,
                             reserved: 0,
@@ -10892,8 +10895,9 @@ mod tests {
             (
                 ServerMessage::LineStatus {
                     instance: 3,
-                    number: "1003".into(),
-                    display_name: "A dynamic line label".into(),
+                    directory_number: "1003".into(),
+                    fully_qualified_display_name: "Desk 1003".into(),
+                    display_label: "A dynamic line label".into(),
                 },
                 ProtocolVersion::V8,
                 wire_id::LINE_STAT,
@@ -10901,8 +10905,9 @@ mod tests {
             (
                 ServerMessage::LineStatus {
                     instance: 3,
-                    number: "1003".into(),
-                    display_name: "A dynamic line label".into(),
+                    directory_number: "1003".into(),
+                    fully_qualified_display_name: "Desk 1003".into(),
+                    display_label: "A dynamic line label".into(),
                 },
                 ProtocolVersion::V9,
                 wire_id::LINE_STAT_DYNAMIC,
@@ -10979,6 +10984,30 @@ mod tests {
         assert_eq!(
             ServerMessage::decode(frame, ProtocolVersion::V8).unwrap(),
             message
+        );
+    }
+
+    #[test]
+    fn line_status_keeps_display_identity_separate_from_button_label() {
+        let message = ServerMessage::LineStatus {
+            instance: 1,
+            directory_number: "coral".into(),
+            fully_qualified_display_name: "Coral's phone".into(),
+            display_label: "ATP".into(),
+        };
+
+        let fixed = message.encode(ProtocolVersion::V8).unwrap();
+        let fixed = FrameDecoder::new().push(&fixed).unwrap().remove(0);
+        let fixed: WireLineStatus = decode(fixed.message_id, &fixed.payload).unwrap();
+        assert_eq!(fixed.directory_number.text().unwrap(), "coral");
+        assert_eq!(fixed.display_name.text().unwrap(), "Coral's phone");
+        assert_eq!(fixed.display_label.text().unwrap(), "ATP");
+
+        let dynamic = message.encode(ProtocolVersion::V9).unwrap();
+        let dynamic = FrameDecoder::new().push(&dynamic).unwrap().remove(0);
+        assert_eq!(
+            decode_dynamic_texts(dynamic.message_id, &dynamic.payload, 8, 3).unwrap(),
+            ["coral", "Coral's phone", "ATP"]
         );
     }
 
@@ -11164,8 +11193,9 @@ mod tests {
     fn dynamic_7961_line_status_has_cisco_word_padding() {
         let bytes = ServerMessage::LineStatus {
             instance: 1,
-            number: "1006".into(),
-            display_name: "1006".into(),
+            directory_number: "1006".into(),
+            fully_qualified_display_name: "1006".into(),
+            display_label: "1006".into(),
         }
         .encode(ProtocolVersion::V22)
         .unwrap();
@@ -11181,8 +11211,9 @@ mod tests {
     fn dynamic_station_decoders_reject_missing_or_nonzero_word_padding() {
         let bytes = ServerMessage::LineStatus {
             instance: 1,
-            number: "1006".into(),
-            display_name: "1006".into(),
+            directory_number: "1006".into(),
+            fully_qualified_display_name: "1006".into(),
+            display_label: "1006".into(),
         }
         .encode(ProtocolVersion::V22)
         .unwrap();
@@ -11233,8 +11264,9 @@ mod tests {
     fn legacy_station_labels_use_the_configured_single_byte_code_page() {
         let message = ServerMessage::LineStatus {
             instance: 1,
-            number: "1001".into(),
-            display_name: "Räksmörgås".into(),
+            directory_number: "1001".into(),
+            fully_qualified_display_name: "Desk 1001".into(),
+            display_label: "Räksmörgås".into(),
         };
         let latin1 = message
             .encode_for_legacy_station(ProtocolVersion::V3, LegacyCodePage::Iso8859_1)
@@ -11274,8 +11306,9 @@ mod tests {
         for message in [
             ServerMessage::LineStatus {
                 instance: 1,
-                number: "1001".into(),
-                display_name: label.into(),
+                directory_number: "1001".into(),
+                fully_qualified_display_name: "Desk 1001".into(),
+                display_label: label.into(),
             },
             ServerMessage::ServiceUrlStatus {
                 index: 3,

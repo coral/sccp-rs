@@ -188,8 +188,9 @@ pub(super) fn validate_dynamic_padding(message_id: u32, padding: &[u8]) -> Resul
 
 pub(super) fn encode_dynamic_line_status(
     instance: u32,
-    number: &str,
-    display_name: &str,
+    directory_number: &str,
+    fully_qualified_display_name: &str,
+    display_label: &str,
     code_page: Option<LegacyCodePage>,
 ) -> Result<Vec<u8>, CodecError> {
     let mut payload = encode(
@@ -203,14 +204,14 @@ pub(super) fn encode_dynamic_line_status(
         &mut payload,
         wire_id::LINE_STAT_DYNAMIC,
         "line number",
-        number,
+        directory_number,
         24,
     )?;
     push_dynamic_station_text(
         &mut payload,
         wire_id::LINE_STAT_DYNAMIC,
         "fully qualified display name",
-        display_name,
+        fully_qualified_display_name,
         120,
         code_page,
     )?;
@@ -218,7 +219,7 @@ pub(super) fn encode_dynamic_line_status(
         &mut payload,
         wire_id::LINE_STAT_DYNAMIC,
         "line label",
-        display_name,
+        display_label,
         120,
         code_page,
     )?;
@@ -283,8 +284,9 @@ pub(super) fn decode_dynamic_line_status(payload: &[u8]) -> Result<ServerMessage
     let fields = decode_dynamic_texts(wire_id::LINE_STAT_DYNAMIC, payload, HEADER_SIZE, 3)?;
     Ok(ServerMessage::LineStatus {
         instance: header.line_instance,
-        number: fields[0].clone(),
-        display_name: fields[2].clone(),
+        directory_number: fields[0].clone(),
+        fully_qualified_display_name: fields[1].clone(),
+        display_label: fields[2].clone(),
     })
 }
 

@@ -200,6 +200,20 @@ fn parses_native_configuration_and_builds_definitions() {
 }
 
 #[test]
+fn device_description_and_line_button_label_remain_distinct() {
+    let input = CONFIG
+        .replace("description = Reception", "description = coral")
+        .replace("line = 1001", "button = line, 1001, label=ATP");
+    let config = ModuleConfig::parse(&input).unwrap();
+    let definition = config.device_definitions().remove(0);
+    let primary = definition.first_line().unwrap();
+
+    assert_eq!(definition.description, "coral");
+    assert_eq!(primary.number, "1001");
+    assert_eq!(primary.display_label(), "ATP");
+}
+
+#[test]
 fn parses_bounded_channel_metadata_with_exact_inheritance_and_order() {
     let input = CONFIG
             .replace(

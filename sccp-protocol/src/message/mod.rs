@@ -1927,12 +1927,13 @@ pub enum ServerMessage {
     /// Supplies the station's provisioned device configuration.
     /// Carries user, service, and device settings needed after registration.
     ConfigStatus(ConfigurationStatus),
-    /// Supplies the configured identity of one station line.
-    /// Maps a line instance to its directory number and display name.
+    /// Supplies the configured identity and button label of one station line.
+    /// Keeps the directory number, header identity, and button text distinct.
     LineStatus {
         instance: u32,
-        number: String,
-        display_name: String,
+        directory_number: String,
+        fully_qualified_display_name: String,
+        display_label: String,
     },
     /// Supplies one chunk of the station's logical button layout.
     /// Uses offset and total counts to span layouts across multiple frames.

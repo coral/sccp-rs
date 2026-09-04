@@ -257,19 +257,52 @@ fn shared_line_appearances_keep_distinct_instances_and_labels() {
         line_status(&device, 1),
         Some(ServerMessage::LineStatus {
             instance: 1,
-            number: "4100".into(),
-            display_name: "Operations primary".into(),
+            directory_number: "4100".into(),
+            fully_qualified_display_name: "Shared line phone".into(),
+            display_label: "Operations primary".into(),
         })
     );
     assert_eq!(
         line_status(&device, 2),
         Some(ServerMessage::LineStatus {
             instance: 2,
-            number: "4100".into(),
-            display_name: "Operations shared".into(),
+            directory_number: "4100".into(),
+            fully_qualified_display_name: "4100".into(),
+            display_label: "Operations shared".into(),
         })
     );
     assert_eq!(line_status(&device, 3), None);
+}
+
+#[test]
+fn primary_line_keeps_device_header_separate_from_button_label() {
+    let mut appearance = LineAppearance::new(
+        1,
+        LineDefinition {
+            number: "coral".into(),
+            display_name: "ATP".into(),
+        },
+    );
+    appearance.label = Some("ATP".into());
+    let device = DeviceDefinition {
+        id: DeviceId::new("SEP00AABBCCDDEE").unwrap(),
+        description: "coral".into(),
+        transport: StationTransportRequirement::Either,
+        signaling_qos: None,
+        buttons: vec![ButtonDefinition::Line(appearance)],
+        soft_keys: SoftKeyProfile::default(),
+        ui: Default::default(),
+    };
+
+    assert_eq!(
+        line_status(&device, 1),
+        Some(ServerMessage::LineStatus {
+            instance: 1,
+            directory_number: "coral".into(),
+            fully_qualified_display_name: "coral".into(),
+            display_label: "ATP".into(),
+        })
+    );
 }
 
 #[tokio::test]

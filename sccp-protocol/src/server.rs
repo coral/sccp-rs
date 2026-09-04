@@ -2559,7 +2559,7 @@ impl Server {
         } = accepted;
         let observation_connection_id = self
             .next_observation_connection_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .ok()
@@ -6021,13 +6021,21 @@ fn button_template_messages_for_station(
 }
 
 fn line_status(device: &DeviceDefinition, instance: u32) -> Option<ServerMessage> {
-    device
-        .line(instance)
-        .map(|appearance| ServerMessage::LineStatus {
-            instance: appearance.instance,
-            number: appearance.line.number.clone(),
-            display_name: appearance.display_label().to_owned(),
-        })
+    let appearance = device.line(instance)?;
+    let is_primary = device
+        .first_line()
+        .is_some_and(|primary| primary.id == appearance.id);
+    let fully_qualified_display_name = if is_primary && !device.description.is_empty() {
+        device.description.clone()
+    } else {
+        appearance.line.number.clone()
+    };
+    Some(ServerMessage::LineStatus {
+        instance: appearance.instance,
+        directory_number: appearance.line.number.clone(),
+        fully_qualified_display_name,
+        display_label: appearance.display_label().to_owned(),
+    })
 }
 
 fn call_count_response(device: &DeviceDefinition) -> Result<ServerMessage, CodecError> {
@@ -7443,8 +7451,9 @@ async fn handle_session_command(
                             state,
                             &ServerMessage::LineStatus {
                                 instance: previous.instance,
-                                number: String::new(),
-                                display_name: String::new(),
+                                directory_number: String::new(),
+                                fully_qualified_display_name: String::new(),
+                                display_label: String::new(),
                             },
                         )
                         .await?;

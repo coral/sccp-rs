@@ -791,19 +791,28 @@ fn sanitize(
                 }
             };
             let ServerMessage::LineStatus {
-                number,
-                display_name,
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
                 ..
             } = &mut message
             else {
                 return Err("station-sensitive frame has no typed sanitizer".into());
             };
-            *number = "1001".to_owned();
-            *display_name = "1001".to_owned();
+            *directory_number = "1001".to_owned();
+            *fully_qualified_display_name = "1001".to_owned();
+            *display_label = "1001".to_owned();
             let encoded = message
                 .encode(protocol)
                 .map_err(|error| format!("could not encode sanitized frame: {error}"))?;
-            Ok((encoded, vec!["line_number", "display_name"]))
+            Ok((
+                encoded,
+                vec![
+                    "directory_number",
+                    "fully_qualified_display_name",
+                    "display_label",
+                ],
+            ))
         }
         PrivacyClass::Station => Err(
             "frame contains station text; pass --sanitize-station to replace approved typed fields"
@@ -1130,8 +1139,9 @@ mod tests {
     fn station_sanitizer_rewrites_only_the_approved_typed_fields() {
         let bytes = ServerMessage::LineStatus {
             instance: 1,
-            number: "private-number".into(),
-            display_name: "private-name".into(),
+            directory_number: "private-number".into(),
+            fully_qualified_display_name: "private-display-name".into(),
+            display_label: "private-label".into(),
         }
         .encode(ProtocolVersion::V22)
         .unwrap();
@@ -1151,7 +1161,14 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(fields, ["line_number", "display_name"]);
+        assert_eq!(
+            fields,
+            [
+                "directory_number",
+                "fully_qualified_display_name",
+                "display_label"
+            ]
+        );
         let frame = frames(&Node {
             endpoint: String::new(),
             bytes: sanitized,
@@ -1161,8 +1178,14 @@ mod tests {
         .0;
         assert!(matches!(
             ServerMessage::decode(frame, ProtocolVersion::V22).unwrap(),
-            ServerMessage::LineStatus { number, display_name, .. }
-                if number == "1001" && display_name == "1001"
+            ServerMessage::LineStatus {
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
+                ..
+            } if directory_number == "1001"
+                && fully_qualified_display_name == "1001"
+                && display_label == "1001"
         ));
     }
 
@@ -1362,10 +1385,12 @@ mod tests {
                 .sanitization
                 .iter()
                 .any(|entry| entry.field.starts_with("network_"));
-            let sanitize_station = fixture
-                .sanitization
-                .iter()
-                .any(|entry| entry.field == "line_number" || entry.field == "display_name");
+            let sanitize_station = fixture.sanitization.iter().any(|entry| {
+                matches!(
+                    entry.field.as_str(),
+                    "directory_number" | "fully_qualified_display_name" | "display_label"
+                )
+            });
             let (sanitized, transformations) = sanitize(
                 fixture.direction,
                 captured.frame.clone(),

@@ -405,8 +405,14 @@ async fn anonymous_hotline_registration_gets_one_restricted_public_line() {
     let frames = read_until_message(&mut phone, &mut decoder, wire_id::SOFT_KEY_SET_RES).await;
     assert!(frames.iter().any(|frame| matches!(
         ServerMessage::decode(frame.clone(), protocol),
-        Ok(ServerMessage::LineStatus { instance: 1, number, display_name })
-            if number == "hotline" && display_name == label
+        Ok(ServerMessage::LineStatus {
+            instance: 1,
+            directory_number,
+            fully_qualified_display_name,
+            display_label,
+        }) if directory_number == "hotline"
+            && fully_qualified_display_name == label
+            && display_label == label
     )));
     assert!(frames.iter().any(|frame| matches!(
         ServerMessage::decode(frame.clone(), protocol),
@@ -527,7 +533,7 @@ async fn anonymous_hotline_reload_isolated_from_configured_session_and_is_idempo
     .await;
     assert!(frames.into_iter().any(|frame| matches!(
         ServerMessage::decode(frame, protocol),
-        Ok(ServerMessage::LineStatus { number, .. }) if number == "1001"
+        Ok(ServerMessage::LineStatus { directory_number, .. }) if directory_number == "1001"
     )));
 
     let mut replacement = TcpStream::connect(address).await.unwrap();
@@ -571,8 +577,14 @@ async fn anonymous_hotline_reload_isolated_from_configured_session_and_is_idempo
     .await;
     assert!(frames.into_iter().any(|frame| matches!(
         ServerMessage::decode(frame, protocol),
-        Ok(ServerMessage::LineStatus { number, display_name, .. })
-            if number == "hotline" && display_name == "Guest B"
+        Ok(ServerMessage::LineStatus {
+            directory_number,
+            fully_qualified_display_name,
+            display_label,
+            ..
+        }) if directory_number == "hotline"
+            && fully_qualified_display_name == "Guest B"
+            && display_label == "Guest B"
     )));
 
     assert_eq!(handle.reconfigure_anonymous_hotline(None).await.unwrap(), 1);
@@ -662,7 +674,7 @@ async fn anonymous_hotline_reload_isolated_from_configured_session_and_is_idempo
     .await;
     assert!(frames.into_iter().any(|frame| matches!(
         ServerMessage::decode(frame, protocol),
-        Ok(ServerMessage::LineStatus { number, .. }) if number == "1001"
+        Ok(ServerMessage::LineStatus { directory_number, .. }) if directory_number == "1001"
     )));
 
     handle.shutdown().await.unwrap();
@@ -1556,7 +1568,14 @@ async fn standalone_server_registers_and_serves_line_status() {
             .unwrap();
         assert!(matches!(
             ServerMessage::decode(line.clone(), protocol).unwrap(),
-            ServerMessage::LineStatus { number, .. } if number == "1001"
+            ServerMessage::LineStatus {
+                directory_number,
+                fully_qualified_display_name,
+                display_label,
+                ..
+            } if directory_number == "1001"
+                && fully_qualified_display_name == "Test phone"
+                && display_label == "Desk 1001"
         ));
 
         phone

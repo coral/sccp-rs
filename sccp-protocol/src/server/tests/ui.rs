@@ -974,11 +974,11 @@ fn mobility_candidate_rebuilds_every_slot_in_physical_button_order() {
     );
     assert!(matches!(
         line_status(&with_both, 2),
-        Some(ServerMessage::LineStatus { number, .. }) if number == "9001"
+        Some(ServerMessage::LineStatus { directory_number, .. }) if directory_number == "9001"
     ));
     assert!(matches!(
         line_status(&with_both, 3),
-        Some(ServerMessage::LineStatus { number, .. }) if number == "9002"
+        Some(ServerMessage::LineStatus { directory_number, .. }) if directory_number == "9002"
     ));
 
     let second_map = HashMap::from([(5, second)]);
@@ -987,7 +987,7 @@ fn mobility_candidate_rebuilds_every_slot_in_physical_button_order() {
     assert!(line_status(&without_first, 2).is_none());
     assert!(matches!(
         line_status(&without_first, 3),
-        Some(ServerMessage::LineStatus { number, .. }) if number == "9002"
+        Some(ServerMessage::LineStatus { directory_number, .. }) if directory_number == "9002"
     ));
 }
 
@@ -1088,7 +1088,8 @@ async fn mobility_button_and_live_appearance_refresh_preserve_the_session_call()
     )));
     assert!(frames.iter().any(|frame| matches!(
         ServerMessage::decode(frame.clone(), protocol),
-        Ok(ServerMessage::LineStatus { instance: 2, ref number, .. }) if number == "9001"
+        Ok(ServerMessage::LineStatus { instance: 2, ref directory_number, .. })
+            if directory_number == "9001"
     )));
 
     handle
@@ -1104,7 +1105,8 @@ async fn mobility_button_and_live_appearance_refresh_preserve_the_session_call()
     let frames = read_until_message(&mut phone, &mut decoder, wire_id::LINE_STAT_DYNAMIC).await;
     assert!(frames.iter().any(|frame| matches!(
         ServerMessage::decode(frame.clone(), protocol),
-        Ok(ServerMessage::LineStatus { instance: 2, ref number, .. }) if number.is_empty()
+        Ok(ServerMessage::LineStatus { instance: 2, ref directory_number, .. })
+            if directory_number.is_empty()
     )));
     handle
         .send_confirmed(Command::new(

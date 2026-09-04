@@ -679,7 +679,8 @@ enum DeviceOption {
     /// Selects device parsing and validation for the section.
     Type,
     /// Sets the human-readable description of the device.
-    /// Exposes the label in diagnostics and Asterisk-facing device metadata.
+    /// Displays it in the primary line's station header and exposes it in
+    /// diagnostics and Asterisk-facing device metadata.
     Description,
     #[serde(alias = "softkeyprofile")]
     /// Selects the named soft-key profile assigned to the device.

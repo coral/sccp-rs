@@ -245,7 +245,12 @@ button = line, 1006, label=1006, caller_name=Wbergs Desk, caller_number=1006, ri
 
 For a phone with MAC address `00:11:22:33:44:55`, the section must be named
 `[SEP001122334455]`. This identifier must agree with the device name used by
-the phone's TFTP configuration.
+the phone's TFTP configuration. `description` is the station identity shown in
+the upper-right header for the primary line. It may contain at most 39 bytes
+and is independent of the line button's `label`; for example,
+`description = coral` with
+`button = line, coral, label=ATP` displays `coral` in the header and `ATP`
+beside the line button.
 
 Each `button = line, ...` entry assigns a logical SCCP line to a phone button.
 The second field, `1006` above, must have a corresponding line section. The
