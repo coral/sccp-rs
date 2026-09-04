@@ -10,6 +10,7 @@ on:
       - "asterisk-module/**"
       - "sccp-protocol/**"
       - "tools/chan-sccp2-config-checker/**"
+      - "docs/sccp-example-config.conf"
       - ".cargo/**"
       - "rust-toolchain"
       - "rust-toolchain.toml"
@@ -25,6 +26,7 @@ on:
       - "asterisk-module/**"
       - "sccp-protocol/**"
       - "tools/chan-sccp2-config-checker/**"
+      - "docs/sccp-example-config.conf"
       - ".cargo/**"
       - "rust-toolchain"
       - "rust-toolchain.toml"
@@ -84,10 +86,12 @@ jobs:
       - name: Test configuration checker
         run: cargo test --locked -p chan-sccp2-config-checker
 
-      - name: Validate distributed configuration
-        run: >-
-          cargo run --locked -p chan-sccp2-config-checker --
-          asterisk-module/sccp.conf.example
+      - name: Validate distributed configurations
+        run: |
+          cargo run --locked -p chan-sccp2-config-checker -- --canonical \
+            asterisk-module/sccp.conf.example
+          cargo run --locked -p chan-sccp2-config-checker -- --canonical \
+            docs/sccp-example-config.conf
 
   build:
     runs-on: ubuntu-26.04

@@ -171,9 +171,9 @@ The example begins with:
 
 ```ini
 [general]
-bind = 45.154.28.21:2000
-advertised_address = 45.154.28.21
-server_name = sip.anderstorpsfestivalen.se
+bind = 0.0.0.0:2000
+advertised_address = 192.0.2.10
+server_name = pbx.example.test
 ```
 
 Replace all three example values:
