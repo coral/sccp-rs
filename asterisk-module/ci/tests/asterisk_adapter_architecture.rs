@@ -214,6 +214,23 @@ fn asterisk_visibility_is_scoped_to_its_owning_module() {
 }
 
 #[test]
+fn background_state_has_one_bounded_runtime_owner() {
+    let background = source("src/asterisk/runtime/background.rs");
+    let lifecycle = source("src/asterisk/runtime/lifecycle.rs");
+    let management = source("src/asterisk/runtime/management.rs");
+
+    assert!(management.contains("background_runtime: super::background::BackgroundRuntimeHandle"));
+    assert!(!management.contains("background_store"));
+    assert!(!management.contains("background_mutations"));
+    assert!(!management.contains("next_background_transaction_id"));
+    assert!(background.contains("mpsc::channel(BACKGROUND_REQUEST_CAPACITY)"));
+    assert!(background.contains("store: BackgroundStore<AsteriskDatabase>"));
+    assert!(background.contains("requests.blocking_recv()"));
+    assert!(background.contains("BackgroundRequest::Shutdown"));
+    assert!(lifecycle.contains("runtime.spawn_blocking"));
+}
+
+#[test]
 fn project_owned_internal_c_records_are_absent() {
     let mut files = Vec::new();
     rust_sources(&crate_root().join("src/asterisk"), &mut files);
@@ -291,6 +308,7 @@ fn every_rust_defined_c_callback_is_an_actual_asterisk_entrypoint() {
             ("direct/cli.rs", "cli_restart"),
             ("direct/cli.rs", "cli_dnd"),
             ("direct/cli.rs", "cli_dnd_schedule"),
+            ("direct/cli.rs", "cli_background"),
             ("direct/cli.rs", "cli_message"),
             ("direct/cli.rs", "cli_answer"),
             ("direct/cli.rs", "cli_end"),

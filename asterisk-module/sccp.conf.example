@@ -175,6 +175,10 @@ dnd = off
 ; on which they start. Keep these commented until scheduling is wanted.
 ; dnd_schedule = 22:00-07:00, mon-thu, reject
 ; dnd_schedule = 23:00-09:00, fri-sun, silent
+; The thumbnail defaults to the same URL with `_thumb` before its extension.
+; background_image_dynamic = no
+; background_image_url = http://assets.example.test/phones/reception.png
+; background_thumbnail_url = http://assets.example.test/phones/reception-small.png
 privacy_feature = yes
 privacy = no
 ; Open the phone's Placed Calls application for Redial instead of immediately

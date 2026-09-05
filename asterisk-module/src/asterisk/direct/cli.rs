@@ -17,19 +17,21 @@ use crate::asterisk::sys;
 use crate::config::reload::{MAX_RELOAD_ARGUMENT_BYTES, MAX_RELOAD_ARGUMENTS};
 
 use super::super::exports::{
-    ControlCliCommand, complete_control_cli, complete_device_control_cli, complete_diagnostic_cli,
-    complete_dnd_schedule_cli, complete_inventory_cli, complete_reload_cli, execute_control_cli,
-    execute_device_control_cli, execute_diagnostic_cli, execute_dnd_schedule_cli,
-    execute_forwarding_cli, execute_inventory_cli, execute_reload_cli, execute_version_cli,
+    ControlCliCommand, complete_background_cli, complete_control_cli, complete_device_control_cli,
+    complete_diagnostic_cli, complete_dnd_schedule_cli, complete_inventory_cli,
+    complete_reload_cli, execute_background_cli, execute_control_cli, execute_device_control_cli,
+    execute_diagnostic_cli, execute_dnd_schedule_cli, execute_forwarding_cli,
+    execute_inventory_cli, execute_reload_cli, execute_version_cli,
 };
 
 #[cfg(not(feature = "live-asterisk-tests"))]
-const CLI_ENTRY_COUNT: usize = 17;
-#[cfg(feature = "live-asterisk-tests")]
 const CLI_ENTRY_COUNT: usize = 18;
+#[cfg(feature = "live-asterisk-tests")]
+const CLI_ENTRY_COUNT: usize = 19;
 
 static CLI_ENTRIES: StaticDescriptor<[sys::ast_cli_entry; CLI_ENTRY_COUNT]> =
     StaticDescriptor::uninit();
+const MAX_BACKGROUND_URL_BYTES: usize = 1024;
 
 enum CliPhase {
     Initialize,
@@ -714,6 +716,82 @@ unsafe extern "C" fn cli_dnd_schedule(
         )
     })
 }
+
+/// # Safety
+///
+/// Any supplied entry and arguments must remain valid Asterisk CLI callback
+/// records for the duration of the call.
+unsafe fn run_background_cli(
+    entry: Option<NonNull<sys::ast_cli_entry>>,
+    phase: CliPhase,
+    arguments: Option<CliArgs<'_>>,
+) -> *mut c_char {
+    match phase {
+        CliPhase::Initialize => {
+            if let Some(mut entry) = entry {
+                unsafe {
+                    entry.as_mut().command = c"sccp background".as_ptr().cast_mut();
+                    entry.as_mut().usage = c"Usage:\n  sccp background <device> show\n  sccp background <device> set <image-url> [thumbnail-url]\n  sccp background <device> reset\n".as_ptr();
+                }
+            }
+            ptr::null_mut()
+        }
+        CliPhase::Generate => {
+            let Some(arguments) = arguments else {
+                return ptr::null_mut();
+            };
+            let Ok(completion) = arguments.completion_cursor(2, |index| match index {
+                0 => Some(MAX_DEVICE_SELECTOR_BYTES),
+                1 => Some(16),
+                2 | 3 => Some(MAX_BACKGROUND_URL_BYTES),
+                _ => None,
+            }) else {
+                return ptr::null_mut();
+            };
+            cli_completion(complete_background_cli(
+                completion.position,
+                &completion.prefix,
+                completion.ordinal,
+            ))
+        }
+        CliPhase::Execute => {
+            let Some(arguments) = arguments else {
+                return cli_disposition_pointer(CliDisposition::ShowUsage);
+            };
+            let Ok(invocation) = arguments.invocation(
+                2,
+                |count| (2..=4).contains(&count),
+                |index| match index {
+                    0 => Some(MAX_DEVICE_SELECTOR_BYTES),
+                    1 => Some(16),
+                    2 | 3 => Some(MAX_BACKGROUND_URL_BYTES),
+                    _ => None,
+                },
+            ) else {
+                return cli_disposition_pointer(CliDisposition::ShowUsage);
+            };
+            execute_background_cli(invocation.fd, &invocation.arguments);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// # Safety
+///
+/// Asterisk must supply live callback pointers matching its CLI ABI.
+unsafe extern "C" fn cli_background(
+    entry: *mut sys::ast_cli_entry,
+    command: c_int,
+    arguments: *mut sys::ast_cli_args,
+) -> *mut c_char {
+    callback_guard(ptr::null_mut(), || unsafe {
+        run_background_cli(
+            NonNull::new(entry),
+            CliPhase::from_raw(command),
+            CliArgs::from_raw(arguments),
+        )
+    })
+}
 control_cli_handler!(
     cli_message,
     ControlCliCommand::Message,
@@ -818,6 +896,7 @@ pub(super) unsafe fn entries() -> NonNull<[sys::ast_cli_entry; CLI_ENTRY_COUNT]>
             cli_entry(b"Restart a registered SCCP device\0", cli_restart),
             cli_entry(b"Set DND on a registered SCCP device\0", cli_dnd),
             cli_entry(b"Manage recurring SCCP DND schedules\0", cli_dnd_schedule),
+            cli_entry(b"Manage SCCP device backgrounds\0", cli_background),
             cli_entry(b"Display a message on SCCP devices\0", cli_message),
             cli_entry(b"Answer a ringing SCCP call\0", cli_answer),
             cli_entry(b"End an SCCP call\0", cli_end),

@@ -100,8 +100,8 @@ use crate::phone::xml::{
     self as phone_xml, CiscoIpPhoneGraphicFileMenu, CiscoIpPhoneImageFile, CiscoIpPhoneInputItem,
     CiscoIpPhoneKeyItem, CiscoIpPhoneSoftKeyItem, CiscoIpPhoneStatus, CiscoIpPhoneStatusFile,
     CiscoIpPhoneTouchAreaMenuItem, PHONE_EXECUTE_MAX_ITEMS, PHONE_STATUS_BITMAP_MAX_BYTES,
-    PhoneBackgroundHttpUrl, PhoneBitmapData, PhoneExecutePriority, PhoneImageUrl, PhoneInputFlags,
-    PhoneInputParameterName, PhoneRingtoneUrl, PhoneTouchArea, PhoneXmlKey,
+    PhoneBitmapData, PhoneExecutePriority, PhoneImageUrl, PhoneInputFlags, PhoneInputParameterName,
+    PhoneRingtoneUrl, PhoneTouchArea, PhoneXmlKey,
 };
 use crate::phone::xml::{
     CiscoIpPhoneExecute, CiscoIpPhoneExecuteItem, CiscoIpPhoneInput, CiscoIpPhoneMenu,
@@ -111,9 +111,9 @@ use crate::phone::xml::{
     PHONE_BACKGROUND_APPLICATION_ID, PHONE_EXECUTE_MAX_BYTES, PHONE_IMAGE_MAX_BYTES,
     PHONE_INPUT_MAX_BYTES, PHONE_RINGTONE_APPLICATION_ID, PHONE_STATUS_MAX_BYTES,
     PHONE_TEXT_APPLICATION_ID, PHONE_TEXT_LEGACY_MAX_CHARS, PhoneAlarmTelemetry,
-    PhoneBackgroundControlDocument, PhoneImageDocument, PhoneLocationTelemetry,
-    PhoneServicePriority, PhoneStatusDocument, PhoneXmlError, parse_phone_alarm,
-    parse_phone_location,
+    PhoneBackgroundControlDocument, PhoneBackgroundHttpUrl, PhoneImageDocument,
+    PhoneLocationTelemetry, PhoneServicePriority, PhoneStatusDocument, PhoneXmlError,
+    parse_phone_alarm, parse_phone_location,
 };
 use crate::types::SignalingQos;
 use crate::types::{
@@ -1207,6 +1207,11 @@ pub enum CommandAction {
     SetBackgroundImage {
         transaction_id: TransactionId,
         document: CiscoIpPhoneSetBackground,
+    },
+    /// Displays a web image-service resource on phones without background selection.
+    DisplayBackgroundImage {
+        transaction_id: TransactionId,
+        image_url: PhoneBackgroundHttpUrl,
     },
     /// Previews a background image without selecting it as the active image.
     /// Sends the preview control document under the supplied transaction.
@@ -2887,6 +2892,7 @@ fn command_call_id(command: &Command) -> Option<CallId> {
         | CommandAction::ShowImageService { .. }
         | CommandAction::ShowStatusService { .. }
         | CommandAction::SetBackgroundImage { .. }
+        | CommandAction::DisplayBackgroundImage { .. }
         | CommandAction::PreviewBackgroundImage { .. }
         | CommandAction::SetRingtone { .. }
         | CommandAction::StartAnnouncement { .. }
@@ -6732,6 +6738,24 @@ fn background_control_message(
     Ok(message)
 }
 
+fn background_display_messages(
+    transaction_id: TransactionId,
+    image_url: &PhoneBackgroundHttpUrl,
+    protocol: ProtocolVersion,
+) -> Result<Vec<ServerMessage>, ServerError> {
+    let document =
+        CiscoIpPhoneExecute::new(vec![CiscoIpPhoneExecuteItem::new(image_url.as_str())?])?;
+    execute_phone_action_messages(
+        LineInstance::new(0),
+        CallReference::new(0),
+        ApplicationId::new(PHONE_BACKGROUND_APPLICATION_ID),
+        transaction_id,
+        PhoneServicePriority::LOW,
+        &document,
+        protocol,
+    )
+}
+
 fn ringtone_control_message(
     transaction_id: TransactionId,
     document: &CiscoIpPhoneSetRingTone,
@@ -7720,6 +7744,17 @@ async fn handle_session_command(
                         &PhoneBackgroundControlDocument::Set(document),
                     )?;
                     send_message(stream, &message, protocol).await?;
+                }
+                CommandAction::DisplayBackgroundImage {
+                    transaction_id,
+                    image_url,
+                    ..
+                } => {
+                    for message in
+                        background_display_messages(transaction_id, &image_url, protocol)?
+                    {
+                        send_message(stream, &message, protocol).await?;
+                    }
                 }
                 CommandAction::PreviewBackgroundImage {
                     transaction_id,

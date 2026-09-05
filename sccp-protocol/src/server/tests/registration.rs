@@ -3266,15 +3266,13 @@ async fn registered_phone_receives_typed_background_selection_and_preview_comman
                 && CiscoIpPhoneSetBackground::from_xml(&message.data).unwrap() == set
     )));
 
-    let preview = CiscoIpPhoneSetBackgroundPreview::new(
-        PhoneBackgroundHttpUrl::new("http://pbx.example/background.png?preview=1").unwrap(),
-    );
+    let display_url = PhoneBackgroundHttpUrl::new("https://pbx.example/background.xml").unwrap();
     handle
         .send(Command::new(
-            device_id,
-            CommandAction::PreviewBackgroundImage {
+            device_id.clone(),
+            CommandAction::DisplayBackgroundImage {
                 transaction_id: TransactionId::new(110),
-                document: preview.clone(),
+                image_url: display_url.clone(),
             },
         ))
         .await
@@ -3286,6 +3284,30 @@ async fn registered_phone_receives_typed_background_selection_and_preview_comman
         Ok(ServerMessage::UserToDeviceDataV1(message))
             if message.application_id == PHONE_BACKGROUND_APPLICATION_ID
                 && message.transaction_id == 110
+                && CiscoIpPhoneExecute::from_xml(&message.data).unwrap().items[0].url.as_str()
+                    == display_url.as_str()
+    )));
+
+    let preview = CiscoIpPhoneSetBackgroundPreview::new(
+        PhoneBackgroundHttpUrl::new("http://pbx.example/background.png?preview=1").unwrap(),
+    );
+    handle
+        .send(Command::new(
+            device_id,
+            CommandAction::PreviewBackgroundImage {
+                transaction_id: TransactionId::new(111),
+                document: preview.clone(),
+            },
+        ))
+        .await
+        .unwrap();
+    let frames =
+        read_until_message(&mut phone, &mut decoder, wire_id::USER_TO_DEVICE_DATA_V1).await;
+    assert!(frames.into_iter().any(|frame| matches!(
+        ServerMessage::decode(frame, protocol),
+        Ok(ServerMessage::UserToDeviceDataV1(message))
+            if message.application_id == PHONE_BACKGROUND_APPLICATION_ID
+                && message.transaction_id == 111
                 && CiscoIpPhoneSetBackgroundPreview::from_xml(&message.data).unwrap() == preview
     )));
 

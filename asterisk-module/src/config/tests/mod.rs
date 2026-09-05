@@ -109,6 +109,141 @@ fn sample_configuration_stays_parseable() {
 }
 
 #[test]
+fn device_background_resolves_explicit_and_derived_thumbnails() {
+    let explicit = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_url = http://assets.example.test/desk.jpg?rev=2\n        background_thumbnail_url = http://assets.example.test/desk-small.jpg?rev=2",
+    ))
+    .unwrap();
+    let device = &explicit.devices[&DeviceId::new("SEP001122334455").unwrap()];
+    let background = device
+        .background
+        .as_ref()
+        .unwrap()
+        .resolve(None)
+        .unwrap()
+        .unwrap();
+    let ResolvedDeviceBackground::Set(background) = background else {
+        panic!("static background without a registered model must use set-background");
+    };
+    assert_eq!(
+        background.image_url().as_str(),
+        "http://assets.example.test/desk.jpg?rev=2"
+    );
+    assert_eq!(
+        background.thumbnail_url().as_str(),
+        "http://assets.example.test/desk-small.jpg?rev=2"
+    );
+    assert_eq!(
+        background.thumbnail_source(),
+        BackgroundThumbnailSource::Explicit
+    );
+
+    let derived = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_url = http://assets.example.test/desk.jpg?rev=2",
+    ))
+    .unwrap();
+    let background = derived.devices[&DeviceId::new("SEP001122334455").unwrap()]
+        .background
+        .as_ref()
+        .unwrap()
+        .resolve(None)
+        .unwrap()
+        .unwrap();
+    let ResolvedDeviceBackground::Set(background) = background else {
+        panic!("static background without a registered model must use set-background");
+    };
+    assert_eq!(
+        background.thumbnail_url().as_str(),
+        "http://assets.example.test/desk_thumb.jpg?rev=2"
+    );
+    assert_eq!(
+        background.thumbnail_source(),
+        BackgroundThumbnailSource::Derived
+    );
+}
+
+#[test]
+fn dynamic_device_background_uses_the_registered_model_profile() {
+    let config = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_dynamic = yes\n        background_image_url = https://images.example.test/render.{FORMAT}?w={W}&h={H}&bitdepth={B}",
+    ))
+    .unwrap();
+    let selection = config.devices[&DeviceId::new("SEP001122334455").unwrap()]
+        .background
+        .as_ref()
+        .unwrap();
+    let background = selection
+        .resolve(Some(sccp_protocol::DeviceType::Cisco7965))
+        .unwrap()
+        .unwrap();
+    let ResolvedDeviceBackground::Set(background) = background else {
+        panic!("7965 background must use set-background");
+    };
+    assert!(selection.is_dynamic());
+    assert_eq!(
+        background.image_url().as_str(),
+        "https://images.example.test/render.png?w=320&h=212&bitdepth=16"
+    );
+    assert_eq!(
+        background.thumbnail_url().as_str(),
+        "https://images.example.test/render.png?w=80&h=53&bitdepth=16"
+    );
+}
+
+#[test]
+fn device_background_requires_an_image_and_forbids_a_dynamic_thumbnail() {
+    let thumbnail_only = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_thumbnail_url = http://assets.example.test/private-thumb.png",
+    ))
+    .unwrap_err();
+    assert!(
+        thumbnail_only
+            .to_string()
+            .contains("background_thumbnail_url")
+    );
+
+    let dynamic_thumbnail = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_dynamic = yes\n        background_image_url = https://images.example.test/render?w={W}&h={H}\n        background_thumbnail_url = https://images.example.test/thumb.png",
+    ))
+    .unwrap_err();
+    assert!(
+        dynamic_thumbnail
+            .to_string()
+            .contains("background_thumbnail_url")
+    );
+}
+
+#[test]
+fn device_background_diagnostics_do_not_disclose_resource_urls() {
+    let secret = "https://user:password@private.example.test/background.png?token=secret";
+    let error = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        &format!("        line = 1001\n        background_image_url = {secret}"),
+    ))
+    .unwrap_err();
+    assert!(!error.to_string().contains(secret));
+
+    let duplicate = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_url = http://assets.example.test/desk?token=first\n        background_image_url = http://assets.example.test/desk?token=second",
+    ))
+    .unwrap_err();
+    assert!(!duplicate.to_string().contains("token="));
+
+    let invalid_dynamic = ModuleConfig::parse(&CONFIG.replace(
+        "        line = 1001",
+        "        line = 1001\n        background_image_dynamic = yes\n        background_image_url = https://images.example.test/render?token=private&w={W}&h={H}&mode={UNKNOWN}",
+    ))
+    .unwrap_err();
+    assert!(!invalid_dynamic.to_string().contains("token="));
+}
+
+#[test]
 fn omitted_codec_policy_allows_every_mapped_audio_format() {
     let defaults = GeneralConfig::default();
     assert_eq!(defaults.codecs, mapped_audio_codecs());

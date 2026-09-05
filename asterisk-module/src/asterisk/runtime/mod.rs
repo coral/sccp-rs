@@ -90,6 +90,7 @@ use crate::asterisk::{
 use crate::pbx::operations::CallFeatureProvider;
 
 mod backend;
+mod background;
 mod channel;
 mod cli;
 mod diagnostics;
@@ -103,9 +104,22 @@ mod recording;
 mod services;
 
 pub(super) use dnd_schedule::{
-    DndScheduleRegistry, complete_configured_dnd_device, execute_dnd_schedule_cli,
+    DndScheduleRegistry, complete_configured_device, execute_dnd_schedule_cli,
 };
 use dnd_schedule::{install_reloaded_dnd_schedules, run_dnd_schedule_tick};
+
+pub(super) async fn enqueue_registered_background(
+    access: &Access,
+    device: &DeviceId,
+) -> Result<(), String> {
+    background::enqueue_registered_background(access, device)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn execute_background_cli(access: &Access, arguments: &[String]) -> String {
+    background::execute_background_cli(access, arguments)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct AudioFraming {

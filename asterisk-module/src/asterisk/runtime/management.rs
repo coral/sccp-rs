@@ -52,6 +52,7 @@ pub struct Module {
     pub access: Access,
     pub server_task: JoinHandle<()>,
     pub event_task: JoinHandle<()>,
+    pub background_task: JoinHandle<()>,
     pub parking_subscription: ParkingSubscription,
     pub sorcery_registration: Option<Arc<raw::sorcery::SorceryRegistration>>,
     #[cfg(feature = "telemetry")]
@@ -107,6 +108,7 @@ pub struct Shared {
     pub dnd_schedule_mutations: Mutex<()>,
     pub dnd_schedule_store: crate::state::dnd_schedule::DndScheduleStore<AsteriskDatabase>,
     pub dnd_schedules: Mutex<super::DndScheduleRegistry>,
+    pub(super) background_runtime: super::background::BackgroundRuntimeHandle,
     pub registration_contexts: Mutex<RuntimeRegistrationContexts>,
     pub system_message: Mutex<Option<ActiveSystemMessage>>,
     pub control_requests: mpsc::UnboundedSender<RuntimeControlRequest>,

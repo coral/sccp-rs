@@ -594,11 +594,7 @@ fn show_schedule(access: &Access, device: &DeviceId) -> String {
     output
 }
 
-pub fn complete_configured_dnd_device(
-    access: &Access,
-    prefix: &str,
-    ordinal: usize,
-) -> Option<String> {
+pub fn complete_configured_device(access: &Access, prefix: &str, ordinal: usize) -> Option<String> {
     if prefix.len() > 128 || prefix.chars().any(char::is_control) {
         return None;
     }

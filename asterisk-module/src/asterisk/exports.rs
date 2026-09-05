@@ -6,17 +6,18 @@ use super::runtime::{
     Access, AsteriskBackend, ChannelAllocationOwner, ChannelAllocationRequest, ChannelBinding,
     Module, RuntimeCallSignalDeliveryError, RuntimeCallSignalDeliveryResult, RuntimeCallSignalKind,
     RuntimeCliDiagnosticError, RuntimeCliInventoryError, allocate_channel, ast_log, audio_framing,
-    channel_binding, complete_configured_dnd_device, complete_runtime_cli_diagnostics,
+    channel_binding, complete_configured_device, complete_runtime_cli_diagnostics,
     complete_runtime_cli_inventory, config_path, configured_audio_processing, configured_dtmf_mode,
     device_state, direct_media_call, direct_media_policy, enqueue_media_retarget,
-    execute_answer_call_transition, execute_dnd_schedule_cli as execute_runtime_dnd_schedule_cli,
-    execute_forwarding_mutation, format_for, handle_runtime_hangup_signal, install_mwi,
-    local_media_endpoint, module_access, preferred_codec_upgrade, preferred_inbound_codec,
-    prepare_channel_allocation_text, publish_line, queue_unavailable, read_channel_metadata,
-    read_party_snapshot, registered_device_ids, reload, reload_selected, reload_sorcery,
-    remove_channel, render_runtime_cli_diagnostics, render_runtime_cli_inventory,
-    requestor_auto_answer_mode, retarget_station_to_anchor, state_from_channel, station_nat_active,
-    take_state_from_channel, uninstall_mwi, with_channel,
+    execute_answer_call_transition, execute_background_cli as execute_runtime_background_cli,
+    execute_dnd_schedule_cli as execute_runtime_dnd_schedule_cli, execute_forwarding_mutation,
+    format_for, handle_runtime_hangup_signal, install_mwi, local_media_endpoint, module_access,
+    preferred_codec_upgrade, preferred_inbound_codec, prepare_channel_allocation_text,
+    publish_line, queue_unavailable, read_channel_metadata, read_party_snapshot,
+    registered_device_ids, reload, reload_selected, reload_sorcery, remove_channel,
+    render_runtime_cli_diagnostics, render_runtime_cli_inventory, requestor_auto_answer_mode,
+    retarget_station_to_anchor, state_from_channel, station_nat_active, take_state_from_channel,
+    uninstall_mwi, with_channel,
 };
 use super::{
     AppearanceRingMode, Arc, AsteriskRealtime, AsteriskSorcerySource, AutoAnswerPolicy, CStr,
@@ -1534,10 +1535,26 @@ pub fn execute_dnd_schedule_cli(fd: c_int, arguments: &[String]) {
     raw::system::cli_write(fd, &output);
 }
 
+pub fn execute_background_cli(fd: c_int, arguments: &[String]) {
+    let output = module_access()
+        .map(|access| execute_runtime_background_cli(&access, arguments))
+        .unwrap_or_else(|| "SCCP controls are unavailable\n".to_owned());
+    raw::system::cli_write(fd, &output);
+}
+
+pub fn complete_background_cli(position: usize, prefix: &str, ordinal: usize) -> Option<String> {
+    let access = module_access()?;
+    match position {
+        2 => complete_configured_device(&access, prefix, ordinal),
+        3 => complete_cli_value(["reset", "set", "show"], prefix, ordinal, 16),
+        _ => None,
+    }
+}
+
 pub fn complete_dnd_schedule_cli(position: usize, prefix: &str, ordinal: usize) -> Option<String> {
     let access = module_access()?;
     match position {
-        3 => complete_configured_dnd_device(&access, prefix, ordinal),
+        3 => complete_configured_device(&access, prefix, ordinal),
         4 => complete_cli_value(
             ["add", "clear", "remove", "reset", "show"],
             prefix,

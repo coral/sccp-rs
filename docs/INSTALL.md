@@ -293,6 +293,10 @@ Optional recurring quiet hours can set the phone's DND mode automatically.
 See [DND scheduling](DND_SCHEDULING.md) for the device configuration syntax,
 server-timezone behavior, validation rules, and persistent CLI overrides.
 
+Per-device backgrounds can be selected from configuration or a durable CLI
+override. See [phone background images](BACKGROUND_IMAGES.md) for URL,
+thumbnail, handset-size, and delivery requirements.
+
 ## 5. Add dialplan routing
 
 Calls made from the phone enter the `context` configured on its line. That

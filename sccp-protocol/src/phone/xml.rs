@@ -1064,6 +1064,7 @@ mod tests {
                 .as_str(),
             "http://[2001:db8::1]:8080/image.png?size=full"
         );
+        assert!(PhoneBackgroundHttpUrl::new("https://pbx.example/image.png").is_ok());
         for invalid in [
             "",
             "HTTP:Desktops/320x212x16/image.png",
@@ -1085,7 +1086,7 @@ mod tests {
         }
         for invalid in [
             "",
-            "https://pbx.example/private.png",
+            "ftp://pbx.example/private.png",
             "TFTP:Desktops/image.png",
             "background.png",
             "http://user:secret@pbx.example/private.png",
@@ -1162,7 +1163,7 @@ mod tests {
         )
         .is_err());
         assert!(CiscoIpPhoneSetBackgroundPreview::from_xml(
-            b"<setBackgroundPreview><image>https://pbx.example/image.png</image></setBackgroundPreview>"
+            b"<setBackgroundPreview><image>ftp://pbx.example/image.png</image></setBackgroundPreview>"
         )
         .is_err());
         assert!(PhoneBackgroundControlDocument::from_xml(b"<getDeviceCaps/>").is_err());
