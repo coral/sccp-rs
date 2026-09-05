@@ -93,6 +93,8 @@ pub struct DeviceConfig {
     pub feature_defaults: DeviceFeatureDefaults,
     /// Recurring weekly DND policy in configuration order.
     pub dnd_schedules: Vec<DndSchedule>,
+    /// Background resource or model-resolved pattern applied after registration.
+    pub background: Option<DeviceBackgroundSelection>,
     pub parking: DeviceParkingConfig,
     pub conference: DeviceConferenceConfig,
     pub call_ui: DeviceCallUiConfig,

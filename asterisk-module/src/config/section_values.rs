@@ -99,6 +99,8 @@ pub(super) fn sensitive_option_name(name: &str) -> bool {
             | "tlsprivatekeyfile"
             | "tlstruststore"
             | "tlscafile"
+            | "backgroundimageurl"
+            | "backgroundthumbnailurl"
     )
 }
 
@@ -138,5 +140,7 @@ mod tests {
 
         assert!(sensitive_option_name("Secret"));
         assert!(sensitive_option_name("p-in"));
+        assert!(sensitive_option_name("background_image_url"));
+        assert!(sensitive_option_name("background_thumbnail_url"));
     }
 }

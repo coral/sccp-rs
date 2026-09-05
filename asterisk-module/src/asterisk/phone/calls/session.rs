@@ -4,11 +4,11 @@ use super::super::{
     Access, DriverEffect, LogLevel, MutexExt as _, PhoneCommand, PhoneCommandAction,
     PhoneDeviceEvent, PhoneDeviceEventKind, RegistrationStatus, RuntimeRecordings, ast_log,
     cancel_conference_announcement, cancel_forwarding_entry_for_device, configured_feature_state,
-    controller_step, execute_cleanup_effects, install_blf, log_feature_store_error,
-    prune_recording_sessions, publish_ami_event, publish_device_features, publish_device_lines,
-    publish_recording_button_state, registered_device_ids, registration_event,
-    registration_state_or_fallback, restore_mobility_appearances, restore_system_message,
-    show_conference_list, uninstall_device_blf,
+    controller_step, enqueue_registered_background, execute_cleanup_effects, install_blf,
+    log_feature_store_error, prune_recording_sessions, publish_ami_event, publish_device_features,
+    publish_device_lines, publish_recording_button_state, registered_device_ids,
+    registration_event, registration_state_or_fallback, restore_mobility_appearances,
+    restore_system_message, show_conference_list, uninstall_device_blf,
 };
 
 pub(super) async fn handle_session_event(
@@ -155,6 +155,12 @@ pub(super) async fn handle_session_event(
                 publish_ami_event(access, &registered_event);
                 restore_system_message(access, &device).await;
                 restore_mobility_appearances(access, &device).await;
+                if let Err(error) = enqueue_registered_background(access, &device).await {
+                    ast_log(
+                        LogLevel::Warning,
+                        &format!("unable to apply the registered device background: {error}"),
+                    );
+                }
                 Vec::new()
             }
         }

@@ -1,3 +1,11 @@
+use std::net::SocketAddr;
+use std::os::fd::AsFd;
+use std::path::PathBuf;
+
+use sccp_protocol::StationSocketQos as _;
+use tokio::net::TcpListener;
+use tokio::task::JoinSet;
+
 use super::{
     Access, AmiEventPublisher, Arc, AsteriskDatabase, AsteriskDialplan, AsteriskHints,
     AsteriskHttp, AsteriskManager, AsteriskParking, AsyncMutex, AtomicU64, BTreeMap,
@@ -32,12 +40,7 @@ use super::{
 use crate::call::parking::ParkingEventSource as _;
 use crate::media::encryption::AudioEncryptionAdmissions;
 use crate::runtime::tls::RuntimeTlsAcceptor;
-use sccp_protocol::StationSocketQos as _;
-use std::net::SocketAddr;
-use std::os::fd::AsFd;
-use std::path::PathBuf;
-use tokio::net::TcpListener;
-use tokio::task::JoinSet;
+use crate::state::background::BackgroundStore;
 
 impl From<crate::config::FallbackDecision> for RegistrationFallback {
     fn from(value: crate::config::FallbackDecision) -> Self {
@@ -452,6 +455,7 @@ impl Module {
         let feature_store = FeatureStore::new(AsteriskDatabase::new());
         let dnd_schedule_store =
             crate::state::dnd_schedule::DndScheduleStore::new(AsteriskDatabase::new());
+        let background_store = BackgroundStore::new(AsteriskDatabase::new());
         let dnd_schedules = super::DndScheduleRegistry::load(&config, &dnd_schedule_store)
             .map_err(|error| format!("unable to restore configured DND schedules: {error}"))?;
         let feature_states = feature_store
@@ -461,6 +465,8 @@ impl Module {
         let (parking_events_tx, parking_events) = mpsc::unbounded_channel();
         let (control_requests_tx, control_requests) = mpsc::unbounded_channel();
         let (service_requests_tx, service_requests) = mpsc::unbounded_channel();
+        let (background_runtime, background_mailbox) =
+            super::background::background_runtime_channel();
         let (call_signals_tx, call_signals) = mpsc::unbounded_channel();
         let (recording_trigger_wake, recording_triggers) =
             mpsc::channel(RECORDING_TRIGGER_WAKE_CAPACITY);
@@ -550,6 +556,7 @@ impl Module {
             dnd_schedule_mutations: Mutex::new(()),
             dnd_schedule_store,
             dnd_schedules: Mutex::new(dnd_schedules),
+            background_runtime,
             registration_contexts: Mutex::new(RuntimeRegistrationContexts::new()),
             system_message: Mutex::new(None),
             control_requests: control_requests_tx.clone(),
@@ -728,6 +735,15 @@ impl Module {
         run_dnd_schedule_tick(&access);
         let event_access = access.clone();
         let signal_access = access.clone();
+        let background_access = access.clone();
+        let background_task = runtime.spawn_blocking(move || {
+            super::background::BackgroundRuntime::new(
+                background_access,
+                background_store,
+                background_mailbox,
+            )
+            .run();
+        });
         let event_task = runtime.spawn(async move {
             tokio::join!(
                 run_events(
@@ -747,6 +763,7 @@ impl Module {
             access,
             server_task,
             event_task,
+            background_task,
             parking_subscription,
             sorcery_registration: None,
             #[cfg(feature = "telemetry")]
@@ -779,6 +796,13 @@ impl Module {
         let phone = self.access.phone.clone();
         self.runtime.block_on(async {
             let _ = tokio::time::timeout(Duration::from_secs(2), &mut self.event_task).await;
+            if let Err(error) = self.access.shared.background_runtime.shutdown().await {
+                ast_log(
+                    LogLevel::Warning,
+                    &format!("unable to stop the background runtime cleanly: {error}"),
+                );
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut self.background_task).await;
             shutdown_conferences(&self.access).await;
             shutdown_remote_hangups(&self.access).await;
             shutdown_one_way_microphones(&self.access).await;
@@ -1181,6 +1205,28 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
         }
     }
     drop(feature_guard);
+    match access
+        .handle
+        .block_on(super::background::reconcile_backgrounds_after_reload(
+            access,
+            previous,
+            registered.clone(),
+        )) {
+        Ok(failures) => {
+            for (device, error) in failures {
+                ast_log(
+                    LogLevel::Warning,
+                    &format!(
+                        "unable to apply the reloaded background for device {device}: {error}"
+                    ),
+                );
+            }
+        }
+        Err(error) => ast_log(
+            LogLevel::Warning,
+            &format!("unable to reconcile reloaded backgrounds: {error}"),
+        ),
+    }
     for device in registered {
         if let (Some(previous), Some(current)) = (
             previous_feature_states.get(&device),

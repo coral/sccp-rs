@@ -357,13 +357,14 @@ fn station_configuration_changed(
         .devices
         .get(device)
         .expect("device exists in both configurations");
-    // DND schedules are enforced by the module and do not alter the station
-    // definition. A schedule-only reload must therefore leave the SCCP session
-    // intact while the runtime scheduler reconciles the new calendar policy.
+    // The runtime applies DND schedules and backgrounds without replacing the
+    // SCCP session, so these fields do not change the station definition.
     let mut previous_station = previous_device.clone();
     let mut next_station = next_device.clone();
     previous_station.dnd_schedules.clear();
     next_station.dnd_schedules.clear();
+    previous_station.background = None;
+    next_station.background = None;
     if previous_station != next_station {
         return true;
     }
@@ -542,6 +543,30 @@ mod tests {
             .unwrap()
             .dnd_schedules
             .push(crate::config::DndSchedule::parse("22:00-07:00, *, reject").unwrap());
+
+        let plan = ReloadPlan::build(&previous, &next);
+
+        assert!(plan.changed.is_empty());
+        assert!(plan.added.is_empty());
+        assert!(plan.removed.is_empty());
+    }
+
+    #[test]
+    fn background_only_change_does_not_reconnect_the_station() {
+        let previous = two_devices("", "");
+        let mut next = previous.clone();
+        let device = DeviceId::new("SEP001122334455").unwrap();
+        next.devices.get_mut(&device).unwrap().background = Some(
+            crate::config::DeviceBackground::new(
+                sccp_protocol::PhoneBackgroundHttpUrl::new(
+                    "http://assets.example.test/background.png",
+                )
+                .unwrap(),
+                None,
+            )
+            .unwrap()
+            .into(),
+        );
 
         let plan = ReloadPlan::build(&previous, &next);
 

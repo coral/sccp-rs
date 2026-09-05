@@ -231,17 +231,17 @@ pub(super) fn valid_percent_encoding(value: &str) -> bool {
     true
 }
 
-/// An HTTP URL accepted by the background selection and preview application.
+/// An HTTP or HTTPS URL accepted by the background selection and preview application.
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct PhoneBackgroundHttpUrl(String);
 
 impl PhoneBackgroundHttpUrl {
-    /// Validates an absolute HTTP URL without credentials or a fragment.
+    /// Validates an absolute HTTP or HTTPS URL without credentials or a fragment.
     pub fn new(value: impl Into<String>) -> Result<Self, PhoneXmlError> {
         let value = value.into();
         validate_http_resource_url(
-            "background image HTTP URL",
-            "an absolute HTTP URL without credentials or a fragment",
+            "background image URL",
+            "an absolute HTTP or HTTPS URL without credentials or a fragment",
             &value,
         )?;
         Ok(Self(value))
@@ -272,7 +272,7 @@ pub(super) fn validate_http_resource_url(
     }
     let parsed =
         url::Url::parse(value).map_err(|_| PhoneXmlError::InvalidField { field, expected })?;
-    if parsed.scheme() != "http"
+    if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()

@@ -254,6 +254,7 @@ fn device_snapshot(device: &DeviceConfig) -> Value {
         "channel_variables": variables_snapshot(&device.channel_variables),
         "soft_key_profile": device.soft_key_profile,
         "feature_defaults": device_feature_defaults_snapshot(&device.feature_defaults),
+        "background_configured": device.background.is_some(),
         "parking": format!("{:?}", device.parking),
         "conference": format!("{:?}", device.conference),
         "call_ui": format!("{:?}", device.call_ui),

@@ -1,3 +1,5 @@
+use sccp_protocol::PhoneBackgroundHttpUrl;
+
 use super::super::*;
 use super::button::{parse_button, parse_line_button};
 
@@ -166,6 +168,36 @@ pub(in crate::config) fn parse_device(
                 let schedule = DndSchedule::parse(raw)
                     .map_err(|error| invalid_option(&diagnostic, raw, &error.to_string(), false))?;
                 draft.dnd_schedules.push(schedule);
+                continue;
+            }
+            DeviceOption::BackgroundImageDynamic => {
+                set_once(
+                    &mut draft.background_image_dynamic,
+                    section,
+                    key,
+                    raw,
+                    parse_bool(&diagnostic, raw)?,
+                )?;
+                continue;
+            }
+            DeviceOption::BackgroundImageUrl => {
+                set_once(
+                    &mut draft.background_image_url,
+                    section,
+                    key,
+                    raw,
+                    parse_optional_background_value(raw),
+                )?;
+                continue;
+            }
+            DeviceOption::BackgroundThumbnailUrl => {
+                set_once(
+                    &mut draft.background_thumbnail_url,
+                    section,
+                    key,
+                    raw,
+                    parse_optional_background_value(raw),
+                )?;
                 continue;
             }
             DeviceOption::PrivacyFeature => {
@@ -558,6 +590,12 @@ pub(in crate::config) fn parse_device(
             false,
         )
     })?;
+    let background = parse_device_background(
+        section,
+        draft.background_image_dynamic.unwrap_or(false),
+        draft.background_image_url.unwrap_or(None),
+        draft.background_thumbnail_url.unwrap_or(None),
+    )?;
 
     let line_names: Vec<_> = draft
         .buttons
@@ -724,6 +762,7 @@ pub(in crate::config) fn parse_device(
         soft_key_profile: resolved_soft_key_profile,
         feature_defaults,
         dnd_schedules: draft.dnd_schedules,
+        background,
         parking,
         conference,
         call_ui,
@@ -731,4 +770,91 @@ pub(in crate::config) fn parse_device(
         media,
         network,
     })
+}
+
+fn parse_device_background(
+    section: &RawSection,
+    dynamic: bool,
+    image_url: Option<&str>,
+    thumbnail_url: Option<&str>,
+) -> Result<Option<DeviceBackgroundSelection>, ConfigError> {
+    match (dynamic, image_url, thumbnail_url) {
+        (false, Some(image_url), thumbnail_url) => {
+            let image_url = PhoneBackgroundHttpUrl::new(image_url).map_err(|error| {
+                invalid_option(
+                    section.diagnostic_key("background_image_url"),
+                    "<redacted>",
+                    &error.to_string(),
+                    true,
+                )
+            })?;
+            let thumbnail_url = thumbnail_url
+                .map(PhoneBackgroundHttpUrl::new)
+                .transpose()
+                .map_err(|error| {
+                    invalid_option(
+                        section.diagnostic_key("background_thumbnail_url"),
+                        "<redacted>",
+                        &error.to_string(),
+                        true,
+                    )
+                })?;
+            DeviceBackground::new(image_url, thumbnail_url)
+                .map(DeviceBackgroundSelection::Static)
+                .map(Some)
+                .map_err(|error| {
+                    invalid_option(
+                        section.diagnostic_key("background_image_url"),
+                        "<redacted>",
+                        &error.to_string(),
+                        true,
+                    )
+                })
+        }
+        (true, Some(pattern), None) => DynamicBackgroundPattern::new(pattern)
+            .map(DeviceBackgroundSelection::Dynamic)
+            .map(Some)
+            .map_err(|error| {
+                invalid_option(
+                    section.diagnostic_key("background_image_url"),
+                    "<redacted>",
+                    &error.to_string(),
+                    true,
+                )
+            }),
+        (true, _, Some(_)) => Err(invalid_option(
+            section.diagnostic_key("background_thumbnail_url"),
+            "<redacted>",
+            "no thumbnail URL when background_image_dynamic is enabled",
+            true,
+        )),
+        (true, None, None) => Err(invalid_option(
+            section.diagnostic_key("background_image_dynamic"),
+            "true",
+            "a background_image_url pattern when dynamic backgrounds are enabled",
+            false,
+        )),
+        (false, None, Some(_)) => Err(invalid_option(
+            section.diagnostic_key("background_thumbnail_url"),
+            "<redacted>",
+            "a background_image_url whenever a thumbnail URL is configured",
+            true,
+        )),
+        (false, None, None) => Ok(None),
+    }
+}
+
+fn parse_optional_background_value(raw: &str) -> Option<&str> {
+    let value = raw.trim();
+    match value {
+        "" => None,
+        value
+            if ["none", "off", "disabled"]
+                .iter()
+                .any(|disabled| value.eq_ignore_ascii_case(disabled)) =>
+        {
+            None
+        }
+        value => Some(value),
+    }
 }

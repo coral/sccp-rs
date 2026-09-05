@@ -618,7 +618,7 @@ fn cli_device_controls_are_bounded_and_share_exact_raii_registration() {
     let handles = source("src/asterisk/direct/handles.rs");
     let exports = source("src/asterisk/exports.rs");
 
-    assert!(driver.contains("const CLI_ENTRY_COUNT: usize = 16"));
+    assert!(driver.contains("const CLI_ENTRY_COUNT: usize = 18"));
     assert!(driver.contains("StaticDescriptor<[sys::ast_cli_entry; CLI_ENTRY_COUNT]>"));
     assert!(driver.contains("c\"sccp version\""));
     assert!(driver.contains("execute_version_cli(invocation.fd)"));
@@ -633,6 +633,8 @@ fn cli_device_controls_are_bounded_and_share_exact_raii_registration() {
         "c\"sccp show media statistics\"",
         "c\"sccp show sessions\"",
         "c\"sccp dnd\"",
+        "c\"sccp dnd schedule\"",
+        "c\"sccp background\"",
         "c\"sccp message\"",
         "c\"sccp answer\"",
         "c\"sccp end\"",
@@ -642,6 +644,8 @@ fn cli_device_controls_are_bounded_and_share_exact_raii_registration() {
     }
     assert!(driver.contains("operation.accepts_argument_count(count)"));
     assert!(driver.contains("operation.argument_bound(index)"));
+    assert!(driver.contains("MAX_BACKGROUND_URL_BYTES"));
+    assert!(driver.contains("execute_background_cli(invocation.fd, &invocation.arguments)"));
     assert!(
         driver.contains("execute_control_cli(invocation.fd, operation, &invocation.arguments)")
     );

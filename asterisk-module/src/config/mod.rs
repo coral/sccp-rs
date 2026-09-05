@@ -39,6 +39,7 @@
 //! channel-variable values, TLS paths where marked sensitive, and opaque
 //! provider values do not appear in validation diagnostics.
 
+mod background;
 mod canonical;
 pub mod convergence;
 mod defaults;
@@ -46,6 +47,10 @@ mod dnd_schedule;
 mod inheritance;
 mod model;
 mod parsing;
+pub use background::{
+    BackgroundThumbnailSource, DeviceBackground, DeviceBackgroundError, DeviceBackgroundSelection,
+    DynamicBackgroundPattern, ResolvedDeviceBackground,
+};
 pub use dnd_schedule::*;
 pub use model::*;
 pub mod provider;
@@ -740,6 +745,12 @@ enum DeviceOption {
     /// The start is inclusive, the end is exclusive, and overnight windows
     /// remain anchored to the configured start day.
     DndSchedule,
+    /// Treats the image URL as a model-resolved pattern requiring `{W}` and `{H}`.
+    BackgroundImageDynamic,
+    /// Accepts an absolute HTTP or HTTPS resource, or a pattern in dynamic mode.
+    BackgroundImageUrl,
+    /// Supplies the static thumbnail when filename-based derivation is unsuitable.
+    BackgroundThumbnailUrl,
     #[serde(
         rename = "privacy_feature",
         alias = "private",
@@ -1090,6 +1101,9 @@ struct DeviceSectionDraft<'a> {
     dnd: Option<DndMode>,
     dnd_schedules: Vec<DndSchedule>,
     dnd_schedule_cleared: bool,
+    background_image_dynamic: Option<bool>,
+    background_image_url: Option<Option<&'a str>>,
+    background_thumbnail_url: Option<Option<&'a str>>,
     privacy_enabled: Option<bool>,
     privacy: Option<bool>,
     parking_enabled: Option<bool>,
