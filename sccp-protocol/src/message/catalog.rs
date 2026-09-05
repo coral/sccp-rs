@@ -373,7 +373,7 @@ message_catalog! {
     (Alarm => ALARM, 0x0020, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::Fixed, fixed_payload_bytes: None, payload_size_bounds: None, runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::Lossless, response: ResponseExpectation::None, verification: ContractVerification::Structural }),
     (MulticastMediaReceptionAck => MULTICAST_MEDIA_RECEPTION_ACK, 0x0021, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::Fixed, fixed_payload_bytes: Some(12), payload_size_bounds: Some(PayloadSizeBounds { minimum: 12, maximum: 12 }), runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::Lossless, response: ResponseExpectation::None, verification: ContractVerification::Structural }),
     (OpenReceiveChannelAck => OPEN_RECEIVE_CHANNEL_ACK, 0x0022, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::VersionSelected, fixed_payload_bytes: None, payload_size_bounds: None, runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::Lossless, response: ResponseExpectation::None, verification: ContractVerification::StructuralAndValidated }),
-    (ConnectionStatisticsResponse => CONNECTION_STATISTICS_RES, 0x0023, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::VersionAndLengthSelected, fixed_payload_bytes: None, payload_size_bounds: Some(PayloadSizeBounds { minimum: 61, maximum: 668 }), runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::SemanticProjection("inactive fixed quality-reservoir bytes are not modeled"), response: ResponseExpectation::None, verification: ContractVerification::StructuralAndValidated }),
+    (ConnectionStatisticsResponse => CONNECTION_STATISTICS_RES, 0x0023, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::VersionAndLengthSelected, fixed_payload_bytes: None, payload_size_bounds: Some(PayloadSizeBounds { minimum: 60, maximum: 668 }), runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::SemanticProjection("an omitted quality tail is empty and inactive fixed quality-reservoir bytes are not modeled"), response: ResponseExpectation::None, verification: ContractVerification::StructuralAndValidated }),
     (OffHookWithCallingParty => OFF_HOOK_WITH_CALLING_PARTY, 0x0024, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::Fixed, fixed_payload_bytes: None, payload_size_bounds: None, runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::Lossless, response: ResponseExpectation::None, verification: ContractVerification::Structural }),
     (SoftKeySetRequest => SOFT_KEY_SET_REQ, 0x0025, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::Empty, fixed_payload_bytes: Some(0), payload_size_bounds: Some(PayloadSizeBounds { minimum: 0, maximum: MAX_FRAME_SIZE - HEADER_SIZE }), runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::SemanticProjection("nominally empty request; bounded extension bytes are accepted but not modeled"), response: ResponseExpectation::Message(MessageId::SoftKeySetResponse), verification: ContractVerification::Structural }),
     (SoftKeyEvent => SOFT_KEY_EVENT, 0x0026, StationToControl, ContractMetadata { scope: ContractScope::Base, codec: CodecSupport::Typed, payload_layout: PayloadLayout::Fixed, fixed_payload_bytes: None, payload_size_bounds: None, runtime_use: RuntimeUse::DeviceInput, field_fidelity: FieldFidelity::Lossless, response: ResponseExpectation::None, verification: ContractVerification::StructuralAndValidated }),
@@ -654,7 +654,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             digest,
-            "7725c445a29bac40bd0827bdf6bfa531ecca4377aac4f297a5e950d31149e2b4"
+            "da7ff364b98eef177e100cd3be23cf0c542d643c215da00c524510a5eba2e25e"
         );
     }
 
@@ -829,7 +829,7 @@ mod tests {
         for (id, minimum, maximum) in [
             (MessageId::EnblocCall, 24, 32),
             (MessageId::OnHook, 0, 8),
-            (MessageId::ConnectionStatisticsResponse, 61, 668),
+            (MessageId::ConnectionStatisticsResponse, 60, 668),
         ] {
             assert_eq!(
                 id.contract().unwrap().payload_size_bounds,

@@ -5088,13 +5088,12 @@ async fn hangup_statistics_are_exactly_correlated_retained_and_not_replayed() {
             .is_err()
     );
 
-    let expected = test_connection_statistics("2002", 7001);
+    let mut expected = test_connection_statistics("2002", 7001);
+    expected.quality = crate::ConnectionQualityStatistics::new(Vec::new()).unwrap();
     phone
-        .write_all(
-            &ClientMessage::ConnectionStatisticsResponse(expected.clone())
-                .encode(protocol)
-                .unwrap(),
-        )
+        .write_all(&packed_base_only_connection_statistics_bytes(
+            &expected, protocol,
+        ))
         .await
         .unwrap();
     let Some(Event::Device(DeviceEvent {
@@ -5137,11 +5136,9 @@ async fn hangup_statistics_are_exactly_correlated_retained_and_not_replayed() {
     );
 
     phone
-        .write_all(
-            &ClientMessage::ConnectionStatisticsResponse(expected)
-                .encode(protocol)
-                .unwrap(),
-        )
+        .write_all(&packed_base_only_connection_statistics_bytes(
+            &expected, protocol,
+        ))
         .await
         .unwrap();
     assert!(

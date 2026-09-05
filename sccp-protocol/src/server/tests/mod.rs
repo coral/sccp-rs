@@ -382,6 +382,39 @@ fn test_connection_statistics(directory_number: &str, call_reference: u32) -> Co
     }
 }
 
+fn packed_base_only_connection_statistics_bytes(
+    statistics: &ConnectionStatistics,
+    protocol: ProtocolVersion,
+) -> Vec<u8> {
+    assert!(protocol.wire() >= ProtocolVersion::V22.wire());
+    let directory_number = statistics.directory_number.as_bytes();
+    assert!(directory_number.len() < 28);
+
+    let mut payload = vec![0; 28];
+    payload[..directory_number.len()].copy_from_slice(directory_number);
+    payload.extend_from_slice(&statistics.call_reference.to_le_bytes());
+    payload.push(
+        u8::try_from(statistics.processing.wire_value())
+            .expect("test processing value fits packed statistics layout"),
+    );
+    for counter in [
+        statistics.packets_sent,
+        statistics.octets_sent,
+        statistics.packets_received,
+        statistics.octets_received,
+        statistics.packets_lost,
+        statistics.jitter_millis,
+        statistics.latency_millis,
+    ] {
+        payload.extend_from_slice(&counter.to_le_bytes());
+    }
+    assert_eq!(payload.len(), 61);
+
+    Frame::new(protocol.wire(), wire_id::CONNECTION_STATISTICS_RES, payload)
+        .encode()
+        .unwrap()
+}
+
 #[derive(Debug)]
 struct RecordingSocketQos {
     applied: Arc<std::sync::Mutex<Vec<SignalingQos>>>,

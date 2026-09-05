@@ -2,8 +2,10 @@
 
 use super::*;
 
-const PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES: usize = 64;
-const ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES: usize = 68;
+pub(super) const PRE_19_CONNECTION_STATISTICS_BASE_BYTES: usize = 60;
+pub(super) const PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES: usize = 64;
+pub(super) const ALIGNED_CONNECTION_STATISTICS_BASE_BYTES: usize = 64;
+pub(super) const ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES: usize = 68;
 const PACKED_CONNECTION_STATISTICS_BASE_BYTES: usize = 61;
 const PACKED_CONNECTION_STATISTICS_PREFIX_BYTES: usize = 65;
 
@@ -89,22 +91,13 @@ pub(super) fn decode_connection_statistics(
     message_id: u32,
 ) -> Result<ConnectionStatistics, CodecError> {
     fn select_layout(
-        first: Result<ConnectionStatistics, CodecError>,
-        second: Result<ConnectionStatistics, CodecError>,
-        prefer_first_error: bool,
-        payload_bytes: usize,
-        message_id: u32,
+        preferred: Result<ConnectionStatistics, CodecError>,
+        fallback: Result<ConnectionStatistics, CodecError>,
     ) -> Result<ConnectionStatistics, CodecError> {
-        match (first, second) {
-            (Ok(first), Ok(second)) if first == second => Ok(first),
-            (Ok(_), Ok(_)) => Err(CodecError::InvalidValue {
-                message_id,
-                field: "ambiguous connection-statistics layout",
-                value: payload_bytes as u64,
-            }),
+        match (preferred, fallback) {
+            (Ok(preferred), Ok(_)) => Ok(preferred),
             (Ok(statistics), Err(_)) | (Err(_), Ok(statistics)) => Ok(statistics),
-            (Err(error), Err(_)) if prefer_first_error => Err(error),
-            (Err(_), Err(error)) => Err(error),
+            (Err(error), Err(_)) => Err(error),
         }
     }
 
@@ -115,35 +108,63 @@ pub(super) fn decode_connection_statistics(
     ) -> Result<ConnectionStatistics, CodecError> {
         match layout {
             ConnectionStatisticsWireLayout::Pre19 => {
-                let value: WireConnectionStatisticsV3Prefix = decode_prefix(message_id, payload)?;
-                let quality = decode_connection_statistics_quality(
-                    payload,
-                    PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES,
-                    value.statistics.quality_size,
-                    message_id,
-                )?;
+                let base: WireConnectionStatisticsV3Base = decode_prefix(message_id, payload)?;
+                let quality = match payload.len() {
+                    PRE_19_CONNECTION_STATISTICS_BASE_BYTES => Vec::new(),
+                    length if length < PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES => {
+                        return Err(CodecError::Truncated {
+                            message_id,
+                            needed: PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES,
+                            actual: length,
+                        });
+                    }
+                    _ => {
+                        let value: WireConnectionStatisticsV3Prefix =
+                            decode_prefix(message_id, payload)?;
+                        decode_connection_statistics_quality(
+                            payload,
+                            PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES,
+                            value.statistics.quality_size,
+                            message_id,
+                        )?
+                    }
+                };
                 connection_statistics_from_wire(
-                    value.directory_number,
-                    value.call_reference,
-                    value.processing.to_wire(),
-                    value.statistics.counters,
+                    base.directory_number,
+                    base.call_reference,
+                    base.processing.to_wire(),
+                    base.counters,
                     quality,
                     message_id,
                 )
             }
             ConnectionStatisticsWireLayout::Aligned => {
-                let value: WireConnectionStatisticsV19Prefix = decode_prefix(message_id, payload)?;
-                let quality = decode_connection_statistics_quality(
-                    payload,
-                    ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES,
-                    value.statistics.quality_size,
-                    message_id,
-                )?;
+                let base: WireConnectionStatisticsV19Base = decode_prefix(message_id, payload)?;
+                let quality = match payload.len() {
+                    ALIGNED_CONNECTION_STATISTICS_BASE_BYTES => Vec::new(),
+                    length if length < ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES => {
+                        return Err(CodecError::Truncated {
+                            message_id,
+                            needed: ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES,
+                            actual: length,
+                        });
+                    }
+                    _ => {
+                        let value: WireConnectionStatisticsV19Prefix =
+                            decode_prefix(message_id, payload)?;
+                        decode_connection_statistics_quality(
+                            payload,
+                            ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES,
+                            value.statistics.quality_size,
+                            message_id,
+                        )?
+                    }
+                };
                 connection_statistics_from_wire(
-                    value.directory_number,
-                    value.call_reference,
-                    value.processing.to_wire(),
-                    value.statistics.counters,
+                    base.directory_number,
+                    base.call_reference,
+                    base.processing.to_wire(),
+                    base.counters,
                     quality,
                     message_id,
                 )
@@ -184,20 +205,18 @@ pub(super) fn decode_connection_statistics(
 
     match protocol {
         ..=18 => decode_layout(ConnectionStatisticsWireLayout::Pre19, payload, message_id),
+        // A 64-byte response can be either the new aligned base or a legacy
+        // prefix with an empty quality tail. Protocol 19 defines the former.
         19 => select_layout(
-            decode_layout(ConnectionStatisticsWireLayout::Pre19, payload, message_id),
             decode_layout(ConnectionStatisticsWireLayout::Aligned, payload, message_id),
-            payload.len() < ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES,
-            payload.len(),
-            message_id,
+            decode_layout(ConnectionStatisticsWireLayout::Pre19, payload, message_id),
         ),
         20..=21 => decode_layout(ConnectionStatisticsWireLayout::Aligned, payload, message_id),
+        // Some v22 stations use the 61-byte packed base and pad it to a word
+        // boundary, so the packed interpretation wins an otherwise valid tie.
         22.. => select_layout(
-            decode_layout(ConnectionStatisticsWireLayout::Aligned, payload, message_id),
             decode_layout(ConnectionStatisticsWireLayout::Packed, payload, message_id),
-            payload.len().is_multiple_of(4),
-            payload.len(),
-            message_id,
+            decode_layout(ConnectionStatisticsWireLayout::Aligned, payload, message_id),
         ),
     }
 }

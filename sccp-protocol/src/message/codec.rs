@@ -1776,6 +1776,22 @@ type WireConnectionStatisticsV19 = WireConnectionStatistics<25, 3, u32>;
 
 #[derive(BinRead, BinWrite, Clone, Copy, Debug, Eq, PartialEq)]
 #[brw(little)]
+struct WireConnectionStatisticsBase<
+    const TEXT_BYTES: usize,
+    const ALIGNMENT_BYTES: usize,
+    Processing: WireStatisticsProcessing,
+> {
+    directory_number: WireAlignedText<TEXT_BYTES, ALIGNMENT_BYTES>,
+    call_reference: u32,
+    processing: Processing,
+    counters: WireConnectionStatisticsCounters,
+}
+
+type WireConnectionStatisticsV3Base = WireConnectionStatisticsBase<24, 0, u32>;
+type WireConnectionStatisticsV19Base = WireConnectionStatisticsBase<25, 3, u32>;
+
+#[derive(BinRead, BinWrite, Clone, Copy, Debug, Eq, PartialEq)]
+#[brw(little)]
 struct WireConnectionStatisticsPrefix<
     const TEXT_BYTES: usize,
     const ALIGNMENT_BYTES: usize,
@@ -8615,9 +8631,192 @@ mod tests {
         ));
     }
 
+    fn connection_statistics_test_counters() -> WireConnectionStatisticsCounters {
+        WireConnectionStatisticsCounters {
+            packets_sent: 0x0102_0304,
+            octets_sent: 0x1112_1314,
+            packets_received: 0x2122_2324,
+            octets_received: 0x3132_3334,
+            packets_lost: 0x4142_4344,
+            jitter_millis: 0x5152_5354,
+            latency_millis: 0x6162_6364,
+        }
+    }
+
+    fn connection_statistics_test_message() -> ClientMessage {
+        ClientMessage::ConnectionStatisticsResponse(ConnectionStatistics {
+            directory_number: "2002".into(),
+            call_reference: 0x1122_3344,
+            processing: StatisticsProcessing::DoNotClear,
+            packets_sent: 0x0102_0304,
+            octets_sent: 0x1112_1314,
+            packets_received: 0x2122_2324,
+            octets_received: 0x3132_3334,
+            packets_lost: 0x4142_4344,
+            jitter_millis: 0x5152_5354,
+            latency_millis: 0x6162_6364,
+            quality: ConnectionQualityStatistics::new(Vec::new()).unwrap(),
+        })
+    }
+
+    #[test]
+    fn legacy_connection_statistics_accept_base_without_quality_size() {
+        let payload = encode(
+            wire_id::CONNECTION_STATISTICS_RES,
+            &WireConnectionStatisticsV3Base {
+                directory_number: WireAlignedText::new(
+                    wire_id::CONNECTION_STATISTICS_RES,
+                    "directory number",
+                    "2002",
+                )
+                .unwrap(),
+                call_reference: 0x1122_3344,
+                processing: StatisticsProcessing::DoNotClear.wire_value(),
+                counters: connection_statistics_test_counters(),
+            },
+        )
+        .unwrap();
+        assert_eq!(payload.len(), PRE_19_CONNECTION_STATISTICS_BASE_BYTES);
+
+        for protocol in [
+            ProtocolVersion::V3,
+            ProtocolVersion::V17,
+            ProtocolVersion::V18,
+        ] {
+            assert_eq!(
+                ClientMessage::decode_with_version(
+                    Frame::new(
+                        protocol.wire(),
+                        wire_id::CONNECTION_STATISTICS_RES,
+                        payload.clone(),
+                    ),
+                    protocol,
+                )
+                .unwrap(),
+                connection_statistics_test_message(),
+                "protocol {}",
+                protocol.wire(),
+            );
+        }
+    }
+
+    #[test]
+    fn aligned_connection_statistics_accept_base_without_quality_size() {
+        let payload = encode(
+            wire_id::CONNECTION_STATISTICS_RES,
+            &WireConnectionStatisticsV19Base {
+                directory_number: WireAlignedText::new(
+                    wire_id::CONNECTION_STATISTICS_RES,
+                    "directory number",
+                    "2002",
+                )
+                .unwrap(),
+                call_reference: 0x1122_3344,
+                processing: StatisticsProcessing::DoNotClear.wire_value(),
+                counters: connection_statistics_test_counters(),
+            },
+        )
+        .unwrap();
+        assert_eq!(payload.len(), ALIGNED_CONNECTION_STATISTICS_BASE_BYTES);
+
+        for protocol in [
+            ProtocolVersion::V19,
+            ProtocolVersion::V20,
+            ProtocolVersion::V21,
+            ProtocolVersion::V22,
+        ] {
+            assert_eq!(
+                ClientMessage::decode_with_version(
+                    Frame::new(
+                        protocol.wire(),
+                        wire_id::CONNECTION_STATISTICS_RES,
+                        payload.clone(),
+                    ),
+                    protocol,
+                )
+                .unwrap(),
+                connection_statistics_test_message(),
+                "protocol {}",
+                protocol.wire(),
+            );
+        }
+    }
+
+    #[test]
+    fn connection_statistics_reject_partial_quality_size() {
+        let legacy = encode(
+            wire_id::CONNECTION_STATISTICS_RES,
+            &WireConnectionStatisticsV3Base {
+                directory_number: WireAlignedText::new(
+                    wire_id::CONNECTION_STATISTICS_RES,
+                    "directory number",
+                    "2002",
+                )
+                .unwrap(),
+                call_reference: 42,
+                processing: StatisticsProcessing::Clear.wire_value(),
+                counters: connection_statistics_test_counters(),
+            },
+        )
+        .unwrap();
+        let aligned = encode(
+            wire_id::CONNECTION_STATISTICS_RES,
+            &WireConnectionStatisticsV19Base {
+                directory_number: WireAlignedText::new(
+                    wire_id::CONNECTION_STATISTICS_RES,
+                    "directory number",
+                    "2002",
+                )
+                .unwrap(),
+                call_reference: 42,
+                processing: StatisticsProcessing::Clear.wire_value(),
+                counters: connection_statistics_test_counters(),
+            },
+        )
+        .unwrap();
+
+        for extra_bytes in 1..=3 {
+            let mut payload = legacy.clone();
+            payload.resize(payload.len() + extra_bytes, 0);
+            assert!(matches!(
+                ClientMessage::decode_with_version(
+                    Frame::new(
+                        ProtocolVersion::V18.wire(),
+                        wire_id::CONNECTION_STATISTICS_RES,
+                        payload,
+                    ),
+                    ProtocolVersion::V18,
+                ),
+                Err(CodecError::Truncated {
+                    needed: PRE_19_CONNECTION_STATISTICS_PREFIX_BYTES,
+                    actual,
+                    ..
+                }) if actual == PRE_19_CONNECTION_STATISTICS_BASE_BYTES + extra_bytes
+            ));
+
+            let mut payload = aligned.clone();
+            payload.resize(payload.len() + extra_bytes, 0);
+            assert!(matches!(
+                ClientMessage::decode_with_version(
+                    Frame::new(
+                        ProtocolVersion::V20.wire(),
+                        wire_id::CONNECTION_STATISTICS_RES,
+                        payload,
+                    ),
+                    ProtocolVersion::V20,
+                ),
+                Err(CodecError::Truncated {
+                    needed: ALIGNED_CONNECTION_STATISTICS_PREFIX_BYTES,
+                    actual,
+                    ..
+                }) if actual == ALIGNED_CONNECTION_STATISTICS_BASE_BYTES + extra_bytes
+            ));
+        }
+    }
+
     #[test]
     fn packed_connection_statistics_accept_zero_padding_without_a_quality_size() {
-        let mut payload = encode(
+        let payload = encode(
             wire_id::CONNECTION_STATISTICS_RES,
             &WireConnectionStatisticsPackedBase {
                 directory_number: WireAlignedText::new(
@@ -8628,46 +8827,29 @@ mod tests {
                 .unwrap(),
                 call_reference: 0x1122_3344,
                 processing: StatisticsProcessing::DoNotClear.wire_value() as u8,
-                counters: WireConnectionStatisticsCounters {
-                    packets_sent: 0x0102_0304,
-                    octets_sent: 0x1112_1314,
-                    packets_received: 0x2122_2324,
-                    octets_received: 0x3132_3334,
-                    packets_lost: 0x4142_4344,
-                    jitter_millis: 0x5152_5354,
-                    latency_millis: 0x6162_6364,
-                },
+                counters: connection_statistics_test_counters(),
             },
         )
         .unwrap();
         assert_eq!(payload.len(), 61);
-        payload.extend_from_slice(&[0; 3]);
 
-        let message = ClientMessage::decode_with_version(
-            Frame::new(
-                ProtocolVersion::V22.wire(),
-                wire_id::CONNECTION_STATISTICS_RES,
-                payload,
-            ),
-            ProtocolVersion::V22,
-        )
-        .unwrap();
-        assert_eq!(
-            message,
-            ClientMessage::ConnectionStatisticsResponse(ConnectionStatistics {
-                directory_number: "2002".into(),
-                call_reference: 0x1122_3344,
-                processing: StatisticsProcessing::DoNotClear,
-                packets_sent: 0x0102_0304,
-                octets_sent: 0x1112_1314,
-                packets_received: 0x2122_2324,
-                octets_received: 0x3132_3334,
-                packets_lost: 0x4142_4344,
-                jitter_millis: 0x5152_5354,
-                latency_millis: 0x6162_6364,
-                quality: ConnectionQualityStatistics::new(Vec::new()).unwrap(),
-            })
-        );
+        for padding_bytes in 0..=3 {
+            let mut padded = payload.clone();
+            padded.resize(padded.len() + padding_bytes, 0);
+            assert_eq!(
+                ClientMessage::decode_with_version(
+                    Frame::new(
+                        ProtocolVersion::V22.wire(),
+                        wire_id::CONNECTION_STATISTICS_RES,
+                        padded,
+                    ),
+                    ProtocolVersion::V22,
+                )
+                .unwrap(),
+                connection_statistics_test_message(),
+                "{padding_bytes} padding bytes",
+            );
+        }
     }
 
     #[test]
