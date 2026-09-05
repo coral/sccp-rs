@@ -235,7 +235,7 @@ mod tests {
         assert!(!debug.contains("private-password"));
     }
 
-    #[cfg(not(any(feature = "asterisk-22", feature = "asterisk-23")))]
+    #[cfg(not(any(feature = "asterisk-22", feature = "asterisk-latest")))]
     #[test]
     fn development_registration_is_explicitly_unavailable() {
         let result = register_phone_authentication_http(

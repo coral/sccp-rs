@@ -141,7 +141,7 @@ impl Controller {
     /// Roll back a destination-conference launch after effect execution
     /// failed. Calls whose PBX hold completed are resumed externally; calls
     /// whose hold was never executed are restored only in controller state.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn conference_destination_failed(
         &mut self,
         mutation: ConferenceMutationToken,
@@ -776,7 +776,7 @@ impl Controller {
             .find(|session| session.id == conference_id)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn claim_conference_mutation(
         &mut self,
         call_id: CallId,
@@ -785,7 +785,7 @@ impl Controller {
         self.allocate_conference_mutation(owner)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn claim_conference_mutation_by_id(
         &mut self,
         conference_id: ConferenceId,
@@ -794,7 +794,7 @@ impl Controller {
         self.allocate_conference_mutation(ConferenceMutationOwner::Session(conference_id))
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn conference_mutation_is_active(&self, token: ConferenceMutationToken) -> bool {
         if self.conference_mutations.get(&token.owner) != Some(&token.generation) {
             return false;
@@ -809,7 +809,7 @@ impl Controller {
         }
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn complete_conference_mutation(&mut self, token: ConferenceMutationToken) -> bool {
         if self.conference_mutations.get(&token.owner) != Some(&token.generation) {
             return false;

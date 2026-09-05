@@ -17,6 +17,7 @@ on:
       - "rust-toolchain.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".dockerignore"
       - ".github/workflows/asterisk-live-bridges.yml"
       - "!**/*.md"
       - "!**/LICENSE*"
@@ -35,6 +36,7 @@ on:
       - "rust-toolchain.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".dockerignore"
       - ".github/workflows/asterisk-live-bridges.yml"
       - "!**/*.md"
       - "!**/LICENSE*"
@@ -46,15 +48,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - asterisk: 22.7.0
+          - lane: "22"
             feature: asterisk-22
-          - asterisk: 23.4.1
-            feature: asterisk-23
+          - lane: latest
+            feature: asterisk-latest
 
     steps:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve Asterisk source ref
+        id: asterisk
+        run: |
+          ref=$(./asterisk-module/ci/resolve-asterisk-ref.sh "${{ matrix.lane }}")
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
 
       - name: Exercise live channel and bridge ownership
         uses: docker/build-push-action@v6
@@ -63,9 +71,9 @@ jobs:
           file: asterisk-module/ci/Dockerfile
           target: bridge-test
           build-args: |
-            ASTERISK_VERSION=${{ matrix.asterisk }}
+            ASTERISK_REF=${{ steps.asterisk.outputs.ref }}
             ASTERISK_FEATURE=${{ matrix.feature }}
-          cache-from: type=gha,scope=asterisk-ci-${{ matrix.asterisk }}
-          cache-to: type=gha,mode=max,scope=asterisk-ci-${{ matrix.asterisk }}
+          cache-from: type=gha,scope=asterisk-ci-${{ steps.asterisk.outputs.ref }}
+          cache-to: type=gha,mode=max,scope=asterisk-ci-${{ steps.asterisk.outputs.ref }}
           pull: true
           push: false

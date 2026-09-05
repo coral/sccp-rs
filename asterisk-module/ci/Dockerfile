@@ -12,10 +12,12 @@ RUN apt-get update \
         libpq-dev postgresql postgresql-client sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG ASTERISK_VERSION=22.7.0
+ARG ASTERISK_REF=22.7.0
 
-RUN git clone --depth 1 --branch "${ASTERISK_VERSION}" \
-        https://github.com/asterisk/asterisk.git /opt/asterisk-source \
+RUN git init -q /opt/asterisk-source \
+    && git -C /opt/asterisk-source remote add origin https://github.com/asterisk/asterisk.git \
+    && git -C /opt/asterisk-source fetch --depth 1 origin "${ASTERISK_REF}" \
+    && git -C /opt/asterisk-source checkout --detach FETCH_HEAD \
     && cd /opt/asterisk-source \
     && ./configure \
         --prefix=/opt/asterisk-live \
@@ -28,7 +30,6 @@ RUN git clone --depth 1 --branch "${ASTERISK_VERSION}" \
 
 ENV ASTERISK_SOURCE_DIR=/opt/asterisk-source
 ENV ASTERISK_BUILD_DIR=/opt/asterisk-source
-ENV ASTERISK_VERSION=${ASTERISK_VERSION}
 ENV RUSTFLAGS=-Dwarnings
 
 FROM asterisk-source AS asterisk-live

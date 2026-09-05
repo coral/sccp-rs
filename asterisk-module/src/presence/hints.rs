@@ -96,7 +96,7 @@ pub trait HintProvider {
     ) -> Result<Self::Subscription, Self::Error>;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_lookup(
     backend: &impl HintProvider<Error = HintError>,
     target: &HintTarget,
@@ -106,7 +106,7 @@ pub(crate) fn dispatch_lookup(
     backend.lookup(target)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_subscribe<Backend: HintProvider<Error = HintError>>(
     backend: &Backend,
     target: &HintTarget,
@@ -131,7 +131,7 @@ pub enum HintError {
     Unavailable,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn validate_hint_key(field: &'static str, value: &str) -> Result<(), HintError> {
     if value.contains('\0') {
         Err(HintError::InvalidText { field })

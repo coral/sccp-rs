@@ -319,10 +319,37 @@ if [ "$final_rss" -gt "$maximum_final_rss" ]; then
 	exit 1
 fi
 
-cli 'core stop now' >/dev/null
-wait "$asterisk_pid"
+# `core stop now` closes the remote console while the command is still being
+# acknowledged, so its client can occasionally report a transport failure even
+# though Asterisk accepted the shutdown. Trust the child process's bounded,
+# clean exit instead of the remote CLI status alone.
+shutdown_cli_status=0
+cli 'core stop now' >/dev/null 2>&1 || shutdown_cli_status=$?
+shutdown_timeout="$test_root/shutdown-timeout"
+(
+	sleep 10
+	if kill -0 "$asterisk_pid" 2>/dev/null; then
+		: >"$shutdown_timeout"
+		kill "$asterisk_pid" 2>/dev/null || true
+	fi
+) &
+shutdown_watchdog=$!
+asterisk_exit_status=0
+wait "$asterisk_pid" || asterisk_exit_status=$?
 asterisk_pid=
 SCCP_SANDBOX_PID=
+kill "$shutdown_watchdog" 2>/dev/null || true
+wait "$shutdown_watchdog" 2>/dev/null || true
+if [ -f "$shutdown_timeout" ]; then
+	printf 'Asterisk did not stop within 10 seconds (CLI status %s)\n' \
+		"$shutdown_cli_status" >&2
+	exit 1
+fi
+if [ "$asterisk_exit_status" -ne 0 ]; then
+	printf 'Asterisk exited with status %s during shutdown (CLI status %s)\n' \
+		"$asterisk_exit_status" "$shutdown_cli_status" >&2
+	exit 1
+fi
 printf 'Native lifecycle gate passed: %s warmup + %s measured load/unload cycles\n' \
 	"$WARMUP_CYCLES" "$((BATCH_CYCLES * 3))"
 if [ "$LIVE_BRIDGES" -eq 1 ]; then

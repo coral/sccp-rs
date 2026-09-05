@@ -49,10 +49,11 @@ fn numeric_major(version: &[u8]) -> Option<u32> {
 }
 
 fn version_matches_lane(version: &[u8]) -> bool {
-    let Some(baseline) = numeric_major(env!("SCCP_ASTERISK_LANE").as_bytes()) else {
-        return false;
-    };
-    numeric_major(version).is_some_and(|major| major >= baseline)
+    match env!("SCCP_ASTERISK_LANE") {
+        "22" => numeric_major(version).is_some_and(|major| major >= 22),
+        "latest" => version == env!("SCCP_ASTERISK_VERSION").as_bytes(),
+        _ => false,
+    }
 }
 
 fn running_asterisk_matches_lane() -> bool {
@@ -133,18 +134,25 @@ pub unsafe fn module_self() -> *mut sys::ast_module {
 mod tests {
     use super::version_matches_lane;
 
+    #[cfg(feature = "asterisk-22")]
     #[test]
     fn release_lane_accepts_its_baseline_and_newer_majors() {
-        let lane = env!("SCCP_ASTERISK_LANE").parse::<u32>().unwrap();
-        assert!(version_matches_lane(format!("{lane}.0.0").as_bytes()));
-        assert!(version_matches_lane(format!("{lane}.99.1-rc1").as_bytes()));
-        assert!(version_matches_lane(format!("{}.0.0", lane + 1).as_bytes()));
-
-        assert!(!version_matches_lane(
-            format!("{}.99.0", lane - 1).as_bytes()
-        ));
+        assert!(version_matches_lane(b"22.0.0"));
+        assert!(version_matches_lane(b"22.99.1-rc1"));
+        assert!(version_matches_lane(b"23.0.0"));
+        assert!(!version_matches_lane(b"21.99.0"));
         for malformed in [b"".as_slice(), b"dev", b"22beta", b".22"] {
             assert!(!version_matches_lane(malformed));
         }
+    }
+
+    #[cfg(feature = "asterisk-latest")]
+    #[test]
+    fn latest_lane_accepts_only_the_compiled_master_identity() {
+        let version = env!("SCCP_ASTERISK_VERSION");
+        assert!(version.starts_with("GIT-master-"));
+        assert!(version_matches_lane(version.as_bytes()));
+        assert!(!version_matches_lane(b"GIT-master-different"));
+        assert!(!version_matches_lane(b"24.0.0"));
     }
 }

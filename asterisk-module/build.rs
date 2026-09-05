@@ -3,25 +3,35 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Clone, Copy)]
-struct FeatureLane {
-    major: u32,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FeatureLane {
+    Asterisk22,
+    Latest,
 }
 
 impl FeatureLane {
     fn selected() -> Option<Self> {
         let lane_22 = env::var_os("CARGO_FEATURE_ASTERISK_22").is_some();
-        let lane_23 = env::var_os("CARGO_FEATURE_ASTERISK_23").is_some();
-        if !lane_22 && !lane_23 {
+        let lane_latest = env::var_os("CARGO_FEATURE_ASTERISK_LATEST").is_some();
+        if !lane_22 && !lane_latest {
             return None;
         }
         assert_ne!(
-            lane_22, lane_23,
-            "select exactly one of the asterisk-22 or asterisk-23 features"
+            lane_22, lane_latest,
+            "select exactly one of the asterisk-22 or asterisk-latest features"
         );
-        Some(Self {
-            major: if lane_22 { 22 } else { 23 },
+        Some(if lane_22 {
+            Self::Asterisk22
+        } else {
+            Self::Latest
         })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Asterisk22 => "22",
+            Self::Latest => "latest",
+        }
     }
 }
 
@@ -128,22 +138,49 @@ fn validate_target() -> String {
 }
 
 fn validate_version(source_dir: &Path, lane: FeatureLane) -> String {
-    let version = env::var("ASTERISK_VERSION")
-        .ok()
-        .or_else(|| detect_version(source_dir))
-        .unwrap_or_else(|| {
-            panic!(
-                "unable to determine the Asterisk version; set ASTERISK_VERSION to the exact release"
-            )
-        });
-    let major = numeric_major(&version)
-        .unwrap_or_else(|| panic!("unable to extract an Asterisk major version from {version:?}"));
-    assert_eq!(
-        major, lane.major,
-        "selected asterisk-{}, but ASTERISK_SOURCE_DIR reports Asterisk {version}",
-        lane.major
-    );
-    version
+    match lane {
+        FeatureLane::Asterisk22 => {
+            let version = env::var("ASTERISK_VERSION")
+                .ok()
+                .or_else(|| detect_version(source_dir))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unable to determine the Asterisk version; set ASTERISK_VERSION to the exact release"
+                    )
+                });
+            let major = numeric_major(&version).unwrap_or_else(|| {
+                panic!("unable to extract an Asterisk major version from {version:?}")
+            });
+            assert_eq!(
+                major, 22,
+                "selected asterisk-22, but ASTERISK_SOURCE_DIR reports Asterisk {version}"
+            );
+            version
+        }
+        FeatureLane::Latest => {
+            let mainline = source_mainline(source_dir).unwrap_or_else(|| {
+                panic!(
+                    "unable to determine the Asterisk source line from {}",
+                    source_dir.join("configure.ac").display()
+                )
+            });
+            assert_eq!(
+                mainline, "master",
+                "selected asterisk-latest, but ASTERISK_SOURCE_DIR reports Asterisk source line {mainline:?}"
+            );
+            let version = detect_version(source_dir).unwrap_or_else(|| {
+                panic!(
+                    "unable to determine the exact upstream master identity from {}",
+                    source_dir.display()
+                )
+            });
+            assert!(
+                version.starts_with("GIT-master-"),
+                "selected asterisk-latest, but ASTERISK_SOURCE_DIR reports Asterisk {version}"
+            );
+            version
+        }
+    }
 }
 
 fn emit_build_identity(build_dir: &Path, version: &str, lane: FeatureLane) {
@@ -153,7 +190,7 @@ fn emit_build_identity(build_dir: &Path, version: &str, lane: FeatureLane) {
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=SCCP_ASTERISK_VERSION={version}");
     println!("cargo:rustc-env=SCCP_ASTERISK_BUILDOPT_SUM={buildopts}");
-    println!("cargo:rustc-env=SCCP_ASTERISK_LANE={}", lane.major);
+    println!("cargo:rustc-env=SCCP_ASTERISK_LANE={}", lane.name());
 }
 
 fn generate_bindings(paths: &BuildPaths) {
@@ -268,20 +305,48 @@ fn require_file(path: &Path, help: &str) {
 
 fn detect_version(source_dir: &Path) -> Option<String> {
     let script = source_dir.join("build_tools/make_version");
-    let output = Command::new(script).arg(source_dir).output().ok()?;
+    if let Ok(output) = Command::new(script).arg(source_dir).output()
+        && output.status.success()
+        && let Ok(version) = String::from_utf8(output.stdout)
+    {
+        let version = version.trim();
+        if !version.is_empty() && !version.starts_with("UNKNOWN__") {
+            return Some(version.to_owned());
+        }
+    }
+
+    // Asterisk's helper treats a submodule's `.git` file as if there were no
+    // repository. Release sources carry their numeric line in `configure.ac`;
+    // use it directly before reproducing Git identity for the master lane.
+    let mainline = source_mainline(source_dir)?;
+    if numeric_major(&mainline).is_some() {
+        return Some(mainline);
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source_dir)
+        .args(["describe", "--long", "--always", "--tags", "--dirty=M"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
-    let version = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (!version.is_empty()).then_some(version)
+    let description = String::from_utf8(output.stdout).ok()?;
+    let description = description.trim();
+    (!description.is_empty()).then(|| format!("GIT-{mainline}-{description}"))
+}
+
+fn source_mainline(source_dir: &Path) -> Option<String> {
+    let configure = fs::read_to_string(source_dir.join("configure.ac")).ok()?;
+    let prefix = "AC_INIT([asterisk], [";
+    configure.lines().find_map(|line| {
+        let version = line.trim().strip_prefix(prefix)?.split(']').next()?;
+        (!version.is_empty()).then(|| version.to_owned())
+    })
 }
 
 fn numeric_major(version: &str) -> Option<u32> {
-    version
-        .split(|character: char| !character.is_ascii_digit())
-        .find(|part| !part.is_empty())?
-        .parse()
-        .ok()
+    version.split('.').next()?.parse().ok()
 }
 
 fn quoted_define(contents: &str, name: &str) -> Option<String> {

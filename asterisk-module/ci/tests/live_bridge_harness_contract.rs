@@ -19,10 +19,27 @@ fn live_bridge_gate_is_feature_scoped_and_separate_from_artifact_builds() {
     assert!(live.contains("SCCP_LIVE_BRIDGES=1"));
     assert!(!artifact.contains("live-asterisk-tests"));
     assert!(!artifact.contains("test-bridges.sh"));
-    assert!(workflow.contains("22.7.0"));
-    assert!(workflow.contains("23.4.1"));
+    assert!(workflow.contains("lane: \"22\""));
+    assert!(workflow.contains("lane: latest"));
+    assert!(workflow.contains("asterisk-22"));
+    assert!(workflow.contains("asterisk-latest"));
+    assert!(workflow.contains("resolve-asterisk-ref.sh"));
+    assert!(workflow.contains("ASTERISK_REF=${{ steps.asterisk.outputs.ref }}"));
+    assert!(workflow.contains(".dockerignore"));
+    assert!(!workflow.contains("23.4.1"));
     assert!(workflow.contains("asterisk-module/ci/Dockerfile"));
     assert!(workflow.contains("target: bridge-test"));
+}
+
+#[test]
+fn docker_context_excludes_local_research_work() {
+    let dockerignore = workspace_source(".dockerignore");
+
+    assert!(
+        dockerignore
+            .lines()
+            .any(|line| line == "research/.research")
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@
 //! remain in caller order. Concrete Asterisk allocation and traversal belongs
 //! to the native adapter.
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::ffi::CString;
 use std::ffi::NulError;
 use std::str::Utf8Error;
@@ -119,7 +119,7 @@ pub enum RealtimeError {
     MixedSnapshotRevisions { expected: String, actual: String },
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn field_value<'a>(row: &'a RealtimeRow, name: &str) -> Option<&'a Option<String>> {
     row.fields
         .iter()
@@ -127,7 +127,7 @@ fn field_value<'a>(row: &'a RealtimeRow, name: &str) -> Option<&'a Option<String
         .map(|field| &field.value)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn required_text(row: &RealtimeRow, row_index: usize, name: &str) -> Result<String, RealtimeError> {
     field_value(row, name)
         .and_then(Option::as_ref)
@@ -138,7 +138,7 @@ fn required_text(row: &RealtimeRow, row_index: usize, name: &str) -> Result<Stri
         })
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn decode_hex_text(value: &str, row: usize) -> Result<String, RealtimeError> {
     if !value.len().is_multiple_of(2) {
         return Err(RealtimeError::InvalidSnapshotRow {
@@ -179,7 +179,7 @@ fn decode_hex_text(value: &str, row: usize) -> Result<String, RealtimeError> {
 /// their schema order key, checked for one revision, grouped by section, and
 /// decoded without losing repeated fields or the distinction between SQL NULL
 /// and an empty string.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn decode_snapshot_rows(rows: Vec<RealtimeRow>) -> Result<RealtimeLoad, RealtimeError> {
     if !rows
         .iter()
@@ -274,7 +274,7 @@ pub(crate) fn decode_snapshot_rows(rows: Vec<RealtimeRow>) -> Result<RealtimeLoa
     })
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn validate_query(
     family: &str,
     predicates: &[RealtimePredicate],

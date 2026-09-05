@@ -16,6 +16,7 @@ on:
       - "rust-toolchain.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".dockerignore"
       - ".gitmodules"
       - ".github/workflows/asterisk-module.yml"
       - ".github/workflows/asterisk-distro-compatibility.yml"
@@ -32,6 +33,7 @@ on:
       - "rust-toolchain.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".dockerignore"
       - ".gitmodules"
       - ".github/workflows/asterisk-module.yml"
       - ".github/workflows/asterisk-distro-compatibility.yml"
@@ -101,13 +103,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - asterisk: 22.7.0
-            cache: asterisk22
+          - lane: "22"
             feature: asterisk-22
             publish: true
-          - asterisk: 23.4.1
-            cache: asterisk23
-            feature: asterisk-23
+          - lane: latest
+            feature: asterisk-latest
             publish: false
 
     steps:
@@ -130,11 +130,17 @@ jobs:
           build-essential libedit-dev libjansson-dev libsqlite3-dev
           libssl-dev libxml2-dev uuid-dev
 
+      - name: Resolve Asterisk source ref
+        id: asterisk
+        run: |
+          ref=$(./asterisk-module/ci/resolve-asterisk-ref.sh "${{ matrix.lane }}")
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+
       - name: Select and configure Asterisk
         working-directory: asterisk-module/asterisk
         run: |
-          git fetch --tags origin "refs/tags/${{ matrix.asterisk }}:refs/tags/${{ matrix.asterisk }}"
-          git checkout --detach "${{ matrix.asterisk }}"
+          git fetch --depth 1 origin "${{ steps.asterisk.outputs.ref }}"
+          git checkout --detach FETCH_HEAD
           ./configure --without-pjproject-bundled --without-jansson-bundled
           make include/asterisk/buildopts.h
 
@@ -149,7 +155,6 @@ jobs:
         env:
           ASTERISK_SOURCE_DIR: ${{ github.workspace }}/asterisk-module/asterisk
           ASTERISK_BUILD_DIR: ${{ github.workspace }}/asterisk-module/asterisk
-          ASTERISK_VERSION: ${{ matrix.asterisk }}
         run: >-
           cargo build --locked --release -p asterisk-module --no-default-features
           --features ${{ matrix.feature }}
@@ -186,7 +191,6 @@ jobs:
         env:
           ASTERISK_SOURCE_DIR: ${{ github.workspace }}/asterisk-module/asterisk
           ASTERISK_BUILD_DIR: ${{ github.workspace }}/asterisk-module/asterisk
-          ASTERISK_VERSION: ${{ matrix.asterisk }}
         run: >-
           cargo build --locked --release -p asterisk-module --no-default-features
           --features ${{ matrix.feature }},telemetry
@@ -246,7 +250,7 @@ jobs:
             --pull \
             --platform linux/arm64 \
             --progress plain \
-            --build-arg "ASTERISK_VERSION=${{ matrix.asterisk }}" \
+            --build-arg "ASTERISK_REF=${{ matrix.asterisk }}" \
             --build-arg "ASTERISK_FEATURE=${{ matrix.feature }}" \
             --build-arg "MODULE_VERSION=${{ steps.module.outputs.version }}" \
             --cache-from "type=gha,scope=asterisk-arm64-${{ matrix.cache }}" \
@@ -269,7 +273,7 @@ jobs:
             --pull \
             --platform linux/arm64 \
             --progress plain \
-            --build-arg "ASTERISK_VERSION=${{ matrix.asterisk }}" \
+            --build-arg "ASTERISK_REF=${{ matrix.asterisk }}" \
             --build-arg "ASTERISK_FEATURE=${{ matrix.feature }},telemetry" \
             --build-arg "ARTIFACT_VARIANT=debug" \
             --build-arg "MODULE_VERSION=${{ steps.module.outputs.version }}" \
@@ -347,7 +351,7 @@ jobs:
               --target "$GITHUB_SHA" \
               --verify-tag \
               --title "chan_sccp2 v${release_version}" \
-              --notes "Precompiled normal and opt-in debug telemetry modules for Linux x86_64 and ARM64/aarch64. Built against Asterisk 22.7.0 and compatibility-tested with Asterisk 22 and 23." \
+              --notes "Precompiled normal and opt-in debug telemetry modules for Linux x86_64 and ARM64/aarch64. Built against Asterisk 22.7.0 and source-compatibility-tested against upstream Asterisk master." \
               --generate-notes \
               --latest
           fi

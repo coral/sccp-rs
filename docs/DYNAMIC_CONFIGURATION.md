@@ -134,7 +134,7 @@ curl --fail-with-body --user "$ARI_USER:$ARI_PASSWORD" \
 
 ## Provision over an outbound ARI WebSocket
 
-Asterisk 22 and 23 support persistent outbound ARI WebSockets. Configure the
+Asterisk 22 and newer support persistent outbound ARI WebSockets. Configure the
 remote connection in `websocket_client.conf`, then associate it with an ARI
 application and a local read/write ARI user in `ari.conf`. The remote peer can
 send a `RESTRequest` on that same connection.

@@ -50,7 +50,7 @@ pub use dnd_schedule::*;
 pub use model::*;
 pub mod provider;
 pub mod realtime;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub mod reload;
 mod section_values;
 mod serde_section;

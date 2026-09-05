@@ -21,7 +21,7 @@ pub mod directory;
 
 use std::ffi::{CString, NulError};
 use std::fmt;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::sync::Arc;
 
 use sccp_protocol::PhoneXmlRefresh;
@@ -87,7 +87,7 @@ impl HttpMethodSet {
         self.0 != 0 && self.0 & !ALLOW_ALL == 0
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn allow_header(self) -> String {
         let methods = [
             (ALLOW_GET, "GET"),
@@ -265,7 +265,7 @@ impl HttpResponse {
         &self.body
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn validate_for(&self, limits: HttpLimits) -> Result<(), HttpResponseError> {
         if self.body.len() > limits.max_response_bytes {
             return Err(HttpResponseError::BodyTooLarge);
@@ -299,7 +299,7 @@ impl HttpResponse {
 
 /// A typed request-framing failure, before a handler is invoked.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) enum HttpFramingError {
     InvalidContentLength,
     UnsupportedTransferEncoding,
@@ -308,7 +308,7 @@ pub(crate) enum HttpFramingError {
 
 /// A typed handler-response validation failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) enum HttpResponseError {
     BodyTooLarge,
     ContentTypeTooLarge,
@@ -318,12 +318,12 @@ pub(crate) enum HttpResponseError {
     InvalidHeader,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) trait HttpHandler: Send + Sync {
     fn handle(&self, request: HttpRequest) -> HttpResponse;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl<F> HttpHandler for F
 where
     F: Fn(HttpRequest) -> HttpResponse + Send + Sync,
@@ -333,7 +333,7 @@ where
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) type SharedHttpHandler = Arc<dyn HttpHandler>;
 
 /// Backend port for typed HTTP route registration.
@@ -518,7 +518,7 @@ const fn is_http_token_byte(byte: u8) -> bool {
         )
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) const fn http_status_title(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -545,7 +545,7 @@ pub(crate) const fn http_status_title(status: u16) -> &'static str {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn request_body_length(
     headers: &[HttpField],
     maximum: usize,

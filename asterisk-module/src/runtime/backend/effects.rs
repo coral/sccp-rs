@@ -614,7 +614,7 @@ impl HandsetEffect {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ConferenceStartProgress {
     active_leg_held: bool,
@@ -622,7 +622,7 @@ pub(crate) struct ConferenceStartProgress {
     channel_created: bool,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl ConferenceStartProgress {
     pub(crate) const fn active_leg_held(self) -> bool {
         self.active_leg_held
@@ -637,7 +637,7 @@ impl ConferenceStartProgress {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl From<&DriverEffect> for ConferenceStartProgress {
     fn from(effect: &DriverEffect) -> Self {
         Self {
@@ -657,7 +657,7 @@ impl From<&DriverEffect> for ConferenceStartProgress {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl BitOrAssign for ConferenceStartProgress {
     fn bitor_assign(&mut self, completed: Self) {
         self.active_leg_held |= completed.active_leg_held;

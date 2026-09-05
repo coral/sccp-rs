@@ -117,7 +117,7 @@ pub(crate) type ReadHandler =
     dyn for<'a> Fn(DialplanFunctionRead<'a>) -> DialplanCallbackResult<String> + Send + Sync;
 pub(crate) type WriteHandler =
     dyn for<'a> Fn(DialplanFunctionWrite<'a>) -> DialplanCallbackResult<()> + Send + Sync;
-#[cfg(any(feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) type ApplicationHandler = dyn for<'a> Fn(
         DialplanApplicationInvocation<'a>,
     ) -> DialplanCallbackResult<DialplanApplicationResult>
@@ -183,22 +183,22 @@ impl DialplanFunctionHandlers {
         Ok(flags)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) const fn has_read(&self) -> bool {
         self.read.is_some()
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) const fn has_write(&self) -> bool {
         self.write.is_some()
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn read(&self) -> Option<&ReadHandler> {
         self.read.as_deref()
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn write(&self) -> Option<&WriteHandler> {
         self.write.as_deref()
     }

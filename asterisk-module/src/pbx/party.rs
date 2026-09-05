@@ -372,7 +372,7 @@ pub struct RedirectingUpdate {
 
 /// Builds one presentation-preserving redirect update from a native snapshot.
 /// The caller must validate and bound `destination` before this boundary.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn redirected_call_update(
     snapshot: &PartySnapshot,
     destination: &str,
@@ -425,7 +425,7 @@ pub(crate) fn redirected_call_update(
 
 /// Reconstructs the complete redirecting pre-image for compensating a failed
 /// route after the channel metadata was already applied.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn restore_redirecting_update(snapshot: &PartySnapshot) -> RedirectingUpdate {
     RedirectingUpdate {
         original: snapshot.redirecting_original.clone(),
@@ -446,14 +446,14 @@ pub(crate) fn restore_redirecting_update(snapshot: &PartySnapshot) -> Redirectin
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn validate_redirecting_update(
     update: &RedirectingUpdate,
 ) -> Result<(), PartyUpdateError> {
     validate_redirecting(update)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn identity_is_present(identity: &PartyIdentity) -> bool {
     identity.name.is_some() || identity.number.is_some()
 }
@@ -483,7 +483,7 @@ pub enum PartyUpdateError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 /// Whether a party update mutates the channel immediately or is queued for its
 /// consumer. Native adapters must preserve this distinction.
 pub enum Delivery {
@@ -491,7 +491,7 @@ pub enum Delivery {
     Queue,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn validate_identity(
     identity: &PartyIdentity,
     name_field: &'static str,
@@ -501,7 +501,7 @@ fn validate_identity(
     validate_optional_text(number_field, identity.number.as_deref())
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn validate_connected_line(update: &ConnectedLineUpdate) -> Result<(), PartyUpdateError> {
     validate_identity(&update.party, "party name", "party number")?;
     validate_identity(
@@ -511,7 +511,7 @@ fn validate_connected_line(update: &ConnectedLineUpdate) -> Result<(), PartyUpda
     )
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn validate_redirecting(update: &RedirectingUpdate) -> Result<(), PartyUpdateError> {
     i32::try_from(update.count).map_err(|_| PartyUpdateError::CountOutOfRange {
         count: update.count,
@@ -553,7 +553,7 @@ fn validate_redirecting(update: &RedirectingUpdate) -> Result<(), PartyUpdateErr
     )
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 fn validate_optional_text(
     field: &'static str,
     value: Option<&str>,
@@ -565,7 +565,7 @@ fn validate_optional_text(
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) trait PartyUpdateBackend {
     fn snapshot(&self, channel: &AsteriskChannel<'_>) -> Result<PartySnapshot, PartyUpdateError>;
 
@@ -584,7 +584,7 @@ pub(crate) trait PartyUpdateBackend {
     ) -> Result<(), PartyUpdateError>;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_snapshot(
     backend: &impl PartyUpdateBackend,
     channel: &AsteriskChannel<'_>,
@@ -592,7 +592,7 @@ pub(crate) fn dispatch_snapshot(
     backend.snapshot(channel)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_connected(
     backend: &impl PartyUpdateBackend,
     channel: &AsteriskChannel<'_>,
@@ -603,7 +603,7 @@ pub(crate) fn dispatch_connected(
     backend.connected_line(channel, update, delivery)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_redirecting(
     backend: &impl PartyUpdateBackend,
     channel: &AsteriskChannel<'_>,

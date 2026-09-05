@@ -618,7 +618,8 @@ fn cli_device_controls_are_bounded_and_share_exact_raii_registration() {
     let handles = source("src/asterisk/direct/handles.rs");
     let exports = source("src/asterisk/exports.rs");
 
-    assert!(driver.contains("const CLI_ENTRY_COUNT: usize = 16"));
+    assert!(driver.contains("const CLI_ENTRY_COUNT: usize = 17"));
+    assert!(driver.contains("const CLI_ENTRY_COUNT: usize = 18"));
     assert!(driver.contains("StaticDescriptor<[sys::ast_cli_entry; CLI_ENTRY_COUNT]>"));
     assert!(driver.contains("c\"sccp version\""));
     assert!(driver.contains("execute_version_cli(invocation.fd)"));

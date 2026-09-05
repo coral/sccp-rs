@@ -54,7 +54,7 @@ pub trait CallCompletionBackend<Channel>: Send + Sync {
     fn request(&self, channel: &Channel) -> Result<CallCompletionTicket, CallCompletionError>;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn request_owned_with<B, Channel>(
     backend: &B,
     ownership: CallCompletionOwnership<'_>,

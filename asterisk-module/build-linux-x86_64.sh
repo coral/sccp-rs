@@ -2,26 +2,18 @@
 set -eu
 
 usage() {
-	printf 'Usage: %s {22|23|22.x.y|23.x.y} [output-directory]\n' "$0" >&2
+	printf 'Usage: %s {22|latest} [output-directory]\n' "$0" >&2
 }
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
 case "${1:-}" in
-	22)
-		asterisk_version=22.7.0
-		asterisk_feature=asterisk-22
-		;;
-	23)
-		asterisk_version=23.4.1
-		asterisk_feature=asterisk-23
-		;;
-	22.* | 23.*)
-		if ! printf '%s\n' "$1" | grep -Eq '^2[23]\.[0-9]+\.[0-9]+$'; then
-			usage
-			exit 2
-		fi
-		asterisk_version=$1
-		asterisk_feature=asterisk-${1%%.*}
-		;;
+22)
+	asterisk_feature=asterisk-22
+	;;
+latest)
+	asterisk_feature=asterisk-latest
+	;;
 	-h | --help)
 		usage
 		exit 0
@@ -31,6 +23,7 @@ case "${1:-}" in
 		exit 2
 		;;
 esac
+asterisk_ref=$("$script_dir/ci/resolve-asterisk-ref.sh" "$1")
 
 if ! command -v docker >/dev/null 2>&1; then
 	printf 'error: Docker is required; install and start Docker Desktop first.\n' >&2
@@ -45,7 +38,6 @@ if ! docker buildx version >/dev/null 2>&1; then
 	exit 1
 fi
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(dirname -- "$script_dir")
 output_dir=${2:-"$repo_dir/dist"}
 mkdir -p "$output_dir"
@@ -59,7 +51,7 @@ docker buildx build \
 	--pull \
 	--platform linux/amd64 \
 	--progress plain \
-	--build-arg "ASTERISK_VERSION=$asterisk_version" \
+	--build-arg "ASTERISK_REF=$asterisk_ref" \
 	--build-arg "ASTERISK_FEATURE=$asterisk_feature" \
 	--build-arg "MODULE_VERSION=v$module_version" \
 	--target artifact \

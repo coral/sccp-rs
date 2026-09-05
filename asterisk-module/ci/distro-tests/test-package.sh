@@ -2,11 +2,10 @@
 set -eu
 
 package_family=${1:-}
-expected_major=${2:-}
-module_path=${3:-}
+module_path=${2:-}
 
-if [ -z "$expected_major" ] || [ -z "$module_path" ] || [ ! -f "$module_path" ]; then
-	printf 'usage: %s <deb|rpm> <asterisk-major> /path/to/chan_sccp2.so\n' "$0" >&2
+if [ -z "$module_path" ] || [ ! -f "$module_path" ]; then
+	printf 'usage: %s <deb|rpm> /path/to/chan_sccp2.so\n' "$0" >&2
 	exit 2
 fi
 
@@ -29,14 +28,15 @@ esac
 
 asterisk_bin=/usr/sbin/asterisk
 installed_version=$($asterisk_bin -V)
-case "$installed_version" in
-"Asterisk $expected_major".*) ;;
-*)
-	printf 'expected packaged Asterisk %s, found: %s\n' \
-		"$expected_major" "$installed_version" >&2
+installed_release=${installed_version#Asterisk }
+installed_major=${installed_release%%.*}
+if [ "$installed_release" = "$installed_version" ] \
+	|| ! printf '%s\n' "$installed_major" | grep -Eq '^[0-9]+$' \
+	|| [ "$installed_major" -lt 22 ]; then
+	printf 'expected packaged Asterisk 22 or newer, found: %s\n' \
+		"$installed_version" >&2
 	exit 1
-	;;
-esac
+fi
 
 asterisk_module_dir=
 for candidate in \

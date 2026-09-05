@@ -9,7 +9,7 @@
 //! an individual backend or handset failure.
 
 use std::fmt;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::ops::BitOrAssign;
 
 use sccp_protocol::{

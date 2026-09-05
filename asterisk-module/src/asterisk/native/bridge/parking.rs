@@ -249,7 +249,7 @@ unsafe fn presented_identity(
     }
 }
 
-/// Asterisk 22 and 23 expose connected-party strings in this payload without
+/// Supported Asterisk versions expose connected-party strings in this payload without
 /// the presentation bits required to authorize their disclosure. Keep that
 /// ABI family explicit and fail closed instead of treating string presence as
 /// permission.
@@ -272,7 +272,7 @@ unsafe fn decode_parking_event(message: *mut sys::stasis_message) -> Option<Park
     let connected = unsafe { parkee.connected.as_ref() }?;
     let (caller_name, caller_number) =
         unsafe { presented_identity(caller.pres, caller.name, caller.number) };
-    // Asterisk 22 and 23 omit presentation metadata from the connected-party
+    // Asterisk 22 through current upstream master omit presentation metadata from the connected-party
     // parking snapshot. Without an explicitly permitted source, fail closed.
     let _ = connected;
     let (connected_name, connected_number) = connected_identity_without_presentation();

@@ -9,7 +9,7 @@ pub mod hotline;
 pub mod metadata;
 pub mod mobility;
 pub mod parking;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub mod shared_lines;
 pub mod transfer;
 pub mod voicemail;

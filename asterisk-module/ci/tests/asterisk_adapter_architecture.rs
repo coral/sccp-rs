@@ -484,6 +484,27 @@ fn build_uses_one_upstream_binding_surface_and_compiles_no_repository_c() {
 }
 
 #[test]
+fn build_features_cover_the_minimum_and_upstream_master_lanes() {
+    let manifest = source("Cargo.toml");
+    let build = source("build.rs");
+    let module = source("src/lib.rs");
+    let resolver = source("ci/resolve-asterisk-ref.sh");
+
+    for feature in ["asterisk-22 = []", "asterisk-latest = []"] {
+        assert!(manifest.contains(feature));
+    }
+    assert!(!manifest.contains("asterisk-23"));
+    assert!(build.contains_literal("CARGO_FEATURE_ASTERISK_22"));
+    assert!(build.contains_literal("CARGO_FEATURE_ASTERISK_LATEST"));
+    assert!(build.contains_literal("GIT-master-"));
+    assert!(build.contains("if numeric_major(&mainline).is_some()"));
+    assert!(!build.contains_literal("CARGO_FEATURE_ASTERISK_23"));
+    assert!(module.contains("feature = \"asterisk-latest\""));
+    assert!(resolver.contains("refs/heads/master"));
+    assert!(resolver.contains("22.7.0"));
+}
+
+#[test]
 fn only_the_asterisk_module_self_hook_is_exported_explicitly() {
     let mut files = Vec::new();
     rust_sources(&crate_root().join("src"), &mut files);
@@ -837,6 +858,9 @@ fn native_lifecycle_gate_stays_separate_from_artifact_builds() {
     assert!(script.contains("WARMUP_CYCLES:-4"));
     assert!(script.contains("BATCH_CYCLES:-12"));
     assert!(script.contains("autoload = no"));
+    assert!(script.contains("shutdown_cli_status=0"));
+    assert!(script.contains("shutdown_timeout=\"$test_root/shutdown-timeout\""));
+    assert!(script.contains("wait \"$asterisk_pid\" || asterisk_exit_status=$?"));
     assert!(!script.contains("autoload = yes"));
 
     let docker = source("ci/Dockerfile");
@@ -850,9 +874,12 @@ fn native_lifecycle_gate_stays_separate_from_artifact_builds() {
     assert!(artifact_build.contains("rust_sccp_|sccp_ast_"));
 
     let workflow = workspace_source(".github/workflows/asterisk-module.yml");
-    for version in ["22.7.0", "23.4.1"] {
-        assert!(workflow.contains(version));
-    }
+    assert!(workflow.contains("lane: \"22\""));
+    assert!(workflow.contains("lane: latest"));
+    assert!(workflow.contains("asterisk-22"));
+    assert!(workflow.contains("asterisk-latest"));
+    assert!(workflow.contains("resolve-asterisk-ref.sh"));
+    assert!(!workflow.contains("23.4.1"));
     assert!(workflow.contains("make include/asterisk/buildopts.h"));
     assert!(!workflow.contains("make -j"));
     assert!(!workflow.contains("make install"));

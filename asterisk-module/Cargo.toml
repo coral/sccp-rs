@@ -25,12 +25,12 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 # Ordinary workspace builds exercise the Asterisk-independent parts of the
-# adapter. A release module must disable this feature and select exactly one
-# Asterisk ABI baseline.
+# adapter. A native module must disable this feature and select either the
+# Asterisk 22 release baseline or the current upstream master source lane.
 default = ["development"]
 development = []
 asterisk-22 = []
-asterisk-23 = []
+asterisk-latest = []
 telemetry = [
     "dep:base64",
     "dep:futures-util",

@@ -26,7 +26,7 @@ The crate deliberately contains no SIP or PBX policy. It can be used as the phon
 
 ## Asterisk Module
 
-In `asterisk-module` you will find a completely new channel driver called `chan_sccp2`, written in Rust. The current production module targets the Asterisk 22+ ABI generation: it is built against Asterisk 22, accepts newer majors, and is currently tested with Asterisk 22 and 23.
+In `asterisk-module` you will find a completely new channel driver called `chan_sccp2`, written in Rust. The current production module targets the Asterisk 22+ ABI generation: releases are built against Asterisk 22, while source compatibility is continuously tested against upstream Asterisk master.
 
 The driver exposes SCCP as a native Asterisk channel and connects the protocol server to Asterisk's dialplan, RTP/media, device state, hints, message waiting, parking, pickup, transfers, conferencing, call forwarding, CLI, AMI, realtime configuration, and with [sorcery ARI configuration](docs/DYNAMIC_CONFIGURATION.md). It is a new **completely new** implementation built on `sccp-protocol`, not a fork of the old `chan_sccp` module.
 
@@ -35,8 +35,8 @@ You can find the latest [pre-compiled release](https://github.com/coral/sccp-rs/
 ```sh
 # For Asterisk 22
 ./asterisk-module/build-linux-x86_64.sh 22
-# or for Asterisk 23
-./asterisk-module/build-linux-x86_64.sh 23
+# or for current upstream Asterisk master
+./asterisk-module/build-linux-x86_64.sh latest
 ```
 
 The local artifact is written to `dist/chan_sccp2-asterisk-linux-x86_64-v<module-version>.so`. Published releases contain versioned normal and opt-in debug telemetry modules for both architectures. Install the selected artifact in Asterisk's module directory as `chan_sccp2.so`, copy `asterisk-module/sccp.conf.example` ( or [copy it from here](https://github.com/coral/sccp-rs/blob/master/asterisk-module/sccp.conf.example)) to Asterisk's configuration directory as `sccp.conf`, and edit the example device and line definitions for your phones.
@@ -73,7 +73,7 @@ in progress
 
 | Area | Supported | Not supported |
 | --- | --- | --- |
-| Platform | Asterisk 22+ on Linux x86-64 and ARM64/aarch64; currently tested with 22 and 23 | You're kinda on your own with ARM32 and other stuff LOL |
+| Platform | Asterisk 22+ on Linux x86-64 and ARM64/aarch64; tested at the Asterisk 22 baseline and against upstream master | You're kinda on your own with ARM32 and other stuff LOL |
 | Signaling and network | SCCP over TCP or TLS, IPv4/IPv6, NAT address selection, DSCP/COS, registration failover, and per-device transport policy | Configured network/hostname ACL admission |
 | Calling features | Inbound/outbound calls, hold, call waiting, auto-answer, shared lines, transfer, forwarding, pickup, park, barge, DND/privacy, voicemail/MWI, BLF/hints, mobility, call completion, [one-touch, armed, and AMI MixMonitor recording](docs/RECORDING.md), and conferencing | Phone firmware/TFTP provisioning and a built-in PBX or SIP stack |
 | Audio media | Native RTP, early media, jitter buffer, direct RTP, DTMF, and mapped G.711/G.722/G.723/G.729/G.726, GSM, iLBC, Siren7, SLIN16, and Opus | Protected/SRTP media and SCCP codecs with no Asterisk format mapping |

@@ -13,7 +13,7 @@ use crate::state::persistence::{PersistenceError, PersistentStore};
 /// AstDB family used for mutable device feature state.
 pub const FEATURE_FAMILY: &str = "SCCP";
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn registration_state_or_fallback<E>(
     loaded: Result<Option<DeviceFeatureState>, E>,
     previous: Option<DeviceFeatureState>,

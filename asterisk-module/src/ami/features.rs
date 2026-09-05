@@ -13,7 +13,7 @@
 //! are redacted from `Debug` and error output.
 
 use std::collections::BTreeMap;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -279,7 +279,7 @@ pub fn handle_feature_control_request<P: FeatureControlProvider + ?Sized>(
 
 /// Validate an optional appearance selector and return every handset line
 /// instance that must receive the device-wide forwarding state.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn forwarding_ui_line_instances<'a>(
     selected_line: Option<&str>,
     appearances: impl IntoIterator<Item = (&'a str, u32)>,

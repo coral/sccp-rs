@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-#[cfg(any(feature = "asterisk-22", feature = "asterisk-23", test))]
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest", test))]
 use std::time::Duration;
 
 use sccp_protocol::MediaEndpoint;
@@ -135,7 +135,7 @@ pub enum MediaAnchorReason {
 }
 
 /// Duration of the driver-owned conference tone playback window.
-#[cfg(any(feature = "asterisk-22", feature = "asterisk-23", test))]
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest", test))]
 pub(crate) const CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW: Duration = Duration::from_millis(750);
 
 /// Reference-counted reasons that require a call to stay on the PBX-owned RTP

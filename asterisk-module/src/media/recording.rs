@@ -125,7 +125,7 @@ pub trait RecordingProvider {
     ) -> Result<Self::Session, Self::StartError>;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) async fn ordered_recording_start<
     A,
     S,
@@ -155,7 +155,7 @@ where
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) async fn ordered_recording_stop<S, E, Stop, Restore, RestoreFuture>(
     mut session: S,
     stop: Stop,

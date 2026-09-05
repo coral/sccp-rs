@@ -13,7 +13,7 @@ your distribution.
 
 The published modules currently support:
 
-- Asterisk 22 or newer (currently tested with Asterisk 22 and 23)
+- Asterisk 22 or newer (release baseline tested continuously against upstream master)
 - 64-bit x86 Linux (`x86_64`) or 64-bit ARM Linux (`aarch64`)
 - A glibc-based Linux distribution
 

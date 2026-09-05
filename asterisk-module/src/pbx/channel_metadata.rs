@@ -6,10 +6,10 @@
 
 use thiserror::Error;
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use crate::call::metadata::CallMetadata;
 use crate::call::metadata::MetadataError;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use crate::pbx::party::AsteriskChannel;
 
 #[derive(Debug, Error)]
@@ -24,7 +24,7 @@ pub enum ChannelMetadataError {
     Unavailable,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) trait ChannelMetadataBackend {
     fn snapshot(&self, channel: &AsteriskChannel<'_>)
     -> Result<CallMetadata, ChannelMetadataError>;
@@ -42,7 +42,7 @@ pub(crate) trait ChannelMetadataBackend {
     ) -> Result<(), ChannelMetadataError>;
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_snapshot(
     backend: &impl ChannelMetadataBackend,
     channel: &AsteriskChannel<'_>,
@@ -50,7 +50,7 @@ pub(crate) fn dispatch_snapshot(
     backend.snapshot(channel)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_apply(
     backend: &impl ChannelMetadataBackend,
     channel: &AsteriskChannel<'_>,
@@ -60,7 +60,7 @@ pub(crate) fn dispatch_apply(
     backend.apply(channel, metadata)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn dispatch_inherit(
     backend: &impl ChannelMetadataBackend,
     parent: &AsteriskChannel<'_>,
@@ -69,7 +69,7 @@ pub(crate) fn dispatch_inherit(
     backend.inherit(parent, child)
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn validate_native_channel_metadata(
     metadata: &CallMetadata,
 ) -> Result<(), ChannelMetadataError> {

@@ -6,10 +6,10 @@
 //! from an explicit lack of support so required policy cannot silently
 //! downgrade.
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::collections::{HashMap, hash_map::Entry};
 use std::fmt;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::hash::Hash;
 use std::str::FromStr;
 
@@ -196,13 +196,13 @@ pub struct AudioEncryptionAdmission {
     local: LocalEncryptionCapabilities,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 #[derive(Debug)]
 pub(crate) struct AudioEncryptionAdmissions<K> {
     retained: HashMap<K, AudioEncryptionAdmission>,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl<K> Default for AudioEncryptionAdmissions<K> {
     fn default() -> Self {
         Self {
@@ -211,7 +211,7 @@ impl<K> Default for AudioEncryptionAdmissions<K> {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl<K: Eq + Hash> AudioEncryptionAdmissions<K> {
     pub(crate) fn get_or_try_insert_with<E>(
         &mut self,

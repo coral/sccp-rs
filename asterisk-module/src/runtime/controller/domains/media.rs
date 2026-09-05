@@ -678,7 +678,7 @@ impl Controller {
         true
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn media_retarget_compensation_started(
         &mut self,
         call_id: CallId,
@@ -693,7 +693,7 @@ impl Controller {
         Some(previous)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn media_retarget_compensation_enqueue_failed(
         &mut self,
         call_id: CallId,

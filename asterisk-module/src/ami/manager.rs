@@ -387,7 +387,7 @@ impl ManagerEvent {
     }
 }
 
-#[cfg(any(feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) type ManagerActionHandler =
     dyn Fn(ManagerRequest) -> ManagerResponse + Send + Sync + 'static;
 

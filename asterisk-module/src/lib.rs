@@ -2,7 +2,7 @@
 //!
 //! The crate intentionally has a development mode that does not require an
 //! Asterisk checkout. Production modules are built with exactly one of the
-//! `asterisk-22` or `asterisk-23` baseline features and against a configured
+//! `asterisk-22` or `asterisk-latest` source features and against a configured
 //! Asterisk source/build tree.
 //!
 //! Public modules follow domain ownership: [`call`], [`config`], [`media`],
@@ -15,10 +15,10 @@
 //!
 //! - The default `development` feature keeps native Asterisk headers out of
 //!   ordinary tests and documentation builds.
-//! - `asterisk-22` and `asterisk-23` are mutually exclusive ABI baselines. A
-//!   production artifact is generated from one configured source tree and may
-//!   run on that Asterisk major or newer majors in the same ABI generation.
-//!   Module startup rejects majors older than its compiled baseline.
+//! - `asterisk-22` builds the release artifact against Asterisk 22 and accepts
+//!   numeric Asterisk versions 22 or newer at startup.
+//! - `asterisk-latest` follows upstream Asterisk master for compatibility
+//!   testing and loads only into the exact master revision used to build it.
 //! - The crate emits `libchan_sccp2.so`; installation renames that Cargo output
 //!   to `chan_sccp2.so`. Bindgen's configured Asterisk ABI remains private to
 //!   the Rust-native adapter.
@@ -42,7 +42,7 @@ pub mod presence;
 pub mod runtime;
 pub mod state;
 
-#[cfg(any(feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
 mod asterisk;
 
 #[cfg(all(test, feature = "development", feature = "telemetry"))]
@@ -50,17 +50,17 @@ mod asterisk;
 #[path = "asterisk/telemetry/capture.rs"]
 mod telemetry_capture_tests;
 
-#[cfg(all(feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(all(feature = "asterisk-22", feature = "asterisk-latest"))]
 compile_error!("select only one Asterisk ABI lane");
 
 #[cfg(all(
     feature = "development",
-    any(feature = "asterisk-22", feature = "asterisk-23")
+    any(feature = "asterisk-22", feature = "asterisk-latest")
 ))]
 compile_error!("disable the default development feature when building an Asterisk module");
 
 #[cfg(all(
     feature = "live-asterisk-tests",
-    not(any(feature = "asterisk-22", feature = "asterisk-23"))
+    not(any(feature = "asterisk-22", feature = "asterisk-latest"))
 ))]
 compile_error!("live Asterisk tests require one Asterisk ABI lane");

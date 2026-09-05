@@ -21,7 +21,7 @@
 //! parked, shared, or conference-owned call.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -35,10 +35,10 @@ use sccp_protocol::{
 };
 
 use crate::call::auto_answer::AutoAnswerMode;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use crate::call::auto_answer::{AutoAnswerPolicy, AutoAnswerRequest};
 use crate::call::forwarding::{ForwardingDestination, ForwardingRouteReason};
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 use crate::call::hotline::HotlineDestination;
 use crate::call::metadata::{CallMetadata, MetadataError};
 use crate::call::transfer::{
@@ -130,18 +130,18 @@ pub enum HookFlashAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct CallTransitionId(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 enum CallTransitionKind {
     Additional,
     Switch(CallState),
 }
 
 #[derive(Clone, Debug)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct CallTransition {
     pub id: CallTransitionId,
     pub effects: Vec<DriverEffect>,
@@ -155,7 +155,7 @@ pub(crate) struct CallTransition {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 enum CallTransitionMilestone {
     PreviousBackendHeld,
     PreviousHandsetHeld,
@@ -165,19 +165,19 @@ enum CallTransitionMilestone {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct CallTransitionProgress {
     completed: HashSet<CallTransitionMilestone>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct CallTransitionCompensation {
     pub effects: Vec<DriverEffect>,
     pub remove_target_channel: bool,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl CallTransitionProgress {
     pub fn record_success(&mut self, transition: &CallTransition, effect: &DriverEffect) {
         match effect {
@@ -232,7 +232,7 @@ impl CallTransitionProgress {
     }
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 impl CallTransition {
     pub fn remove_target_channel_on_abort(&self, progress: &CallTransitionProgress) -> bool {
         progress.completed(CallTransitionMilestone::TargetBackendStarted)
@@ -244,7 +244,7 @@ impl CallTransition {
 }
 
 #[derive(Clone)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 struct CallDomainSnapshot {
     devices: HashMap<DeviceId, RegisteredDevice>,
     pbx_calls: HashMap<PbxCallId, PbxCall>,
@@ -265,7 +265,7 @@ struct CallRegistry {
 }
 
 #[derive(Clone)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 struct PendingCallTransition {
     transition: CallTransition,
     snapshot: CallDomainSnapshot,
@@ -919,7 +919,7 @@ struct CallWaitingToneSchedule {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 struct PendingAutoAnswer {
     generation: u64,
     pbx_id: PbxCallId,
@@ -963,11 +963,11 @@ pub struct PbxHangupOutcome {
 /// channel has already been detached. Tokens never wrap, so a stale timer can
 /// neither close a later call nor consume a replacement notification.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct RemoteHangupToken(u64);
 
 #[derive(Clone, Debug)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 struct PendingRemoteHangup {
     token: RemoteHangupToken,
     device_id: DeviceId,
@@ -978,7 +978,7 @@ struct PendingRemoteHangup {
 /// Immediate PBX teardown plus optional ownership of the short handset tone
 /// presentation which remains after native channel cleanup.
 #[derive(Clone, Debug)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct RemoteHangupPlan {
     pub outcome: PbxHangupOutcome,
     pub pending: Option<RemoteHangupToken>,
@@ -1048,7 +1048,7 @@ pub enum VoicemailNativeOutcome {
 }
 
 #[derive(Clone, Debug)]
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) struct HotlineCallRequest {
     pub handset_call_id: CallId,
     pub binding: LineBinding,
@@ -1130,11 +1130,11 @@ pub struct Controller {
     next_conference_id: u32,
     next_participant_id: u32,
     next_conference_mutation_generation: u64,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     next_call_transition_id: u64,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     next_auto_answer_generation: u64,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     next_remote_hangup_generation: u64,
     first_digit: Duration,
     interdigit: Duration,
@@ -1150,13 +1150,13 @@ pub struct Controller {
     /// Outbound coupled ORC/SMT transactions which have not received an ORC
     /// acknowledgement yet. The transmit acknowledgement is independent.
     pending_route_media: HashSet<CallId>,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pending_call_transitions: HashMap<CallTransitionId, PendingCallTransition>,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     auto_answer_requests: HashMap<PbxCallId, AutoAnswerRequest>,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pending_auto_answers: HashMap<CallId, PendingAutoAnswer>,
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pending_remote_hangups: HashMap<CallId, PendingRemoteHangup>,
     devices: HashMap<DeviceId, RegisteredDevice>,
     features: HashMap<DeviceId, DeviceFeatureState>,
@@ -1173,7 +1173,7 @@ pub struct Controller {
 /// Runs one pure controller transition and drops the mutex guard before
 /// returning its owned result to adapter code. Adapter I/O belongs after this
 /// function returns.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn controller_step<T>(
     controller: &Mutex<Controller>,
     step: impl FnOnce(&mut Controller) -> T,
@@ -1265,10 +1265,10 @@ impl Controller {
     }
 
     pub fn disconnected(&mut self, device: &DeviceId) -> Vec<DriverEffect> {
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         self.pending_call_transitions
             .retain(|_, pending| &pending.transition.device_id != device);
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         {
             let removed = self
                 .appearances_for_device(device)
@@ -1277,7 +1277,7 @@ impl Controller {
             self.pending_auto_answers
                 .retain(|call_id, _| !removed.contains(call_id));
         }
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         self.pending_remote_hangups
             .retain(|_, pending| &pending.device_id != device);
         let mut pending_answers = self
@@ -1447,7 +1447,7 @@ impl Controller {
             .map_or(HookFlashAction::Transfer, HookFlashAction::AnswerWaiting)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     fn restored_target_handset_effects(&self, transition: &CallTransition) -> Vec<DriverEffect> {
         let Some(appearance) = self.appearance_for_call(transition.target_call_id).cloned() else {
             return vec![
@@ -1609,7 +1609,7 @@ impl Controller {
     /// Restore every device microphone still owned by a committed one-way
     /// auto-answer before the handset server is stopped. Clearing the marker
     /// while producing the effects makes repeated shutdown/drain calls exact.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn drain_one_way_microphones(&mut self) -> Vec<DriverEffect> {
         let mut owned = self
             .call_registry
@@ -1700,7 +1700,7 @@ impl Controller {
         {
             return false;
         }
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         self.pending_auto_answers.remove(&call_id);
         self.remove_appearance(appearance.id);
         if self

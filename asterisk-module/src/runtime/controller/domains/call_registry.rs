@@ -9,11 +9,11 @@ impl Controller {
             next_conference_id: 1,
             next_participant_id: 1,
             next_conference_mutation_generation: 1,
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             next_call_transition_id: 1,
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             next_auto_answer_generation: 1,
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             next_remote_hangup_generation: 1,
             first_digit,
             interdigit,
@@ -25,13 +25,13 @@ impl Controller {
             call_waiting_tones: HashMap::new(),
             pending_phone_answers: HashMap::new(),
             pending_route_media: HashSet::new(),
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             pending_call_transitions: HashMap::new(),
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             auto_answer_requests: HashMap::new(),
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             pending_auto_answers: HashMap::new(),
-            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
             pending_remote_hangups: HashMap::new(),
             devices: HashMap::new(),
             features: HashMap::new(),
@@ -345,7 +345,7 @@ impl Controller {
         Ok(effects)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn begin_active_call_switch_transaction(
         &mut self,
         device_id: &DeviceId,
@@ -517,7 +517,7 @@ impl Controller {
         Ok(effects)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn begin_additional_phone_call_transaction(
         &mut self,
         sccp_id: CallId,
@@ -578,7 +578,7 @@ impl Controller {
     /// additional-call transaction used by ordinary NewCall, but route the
     /// captured destination immediately without exposing digit collection or
     /// a dial tone to the handset.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn begin_hotline_call_transaction(
         &mut self,
         request: HotlineCallRequest,
@@ -614,7 +614,7 @@ impl Controller {
         Ok(transition)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn commit_call_transition(&mut self, id: CallTransitionId) -> bool {
         let Some(pending) = self.pending_call_transitions.remove(&id) else {
             return false;
@@ -632,7 +632,7 @@ impl Controller {
         true
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn record_call_transition_success(
         &mut self,
         id: CallTransitionId,
@@ -645,7 +645,7 @@ impl Controller {
         true
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn abort_call_transition(
         &mut self,
         id: CallTransitionId,
@@ -758,7 +758,7 @@ impl Controller {
     /// had already cancelled its transition. The controller has already
     /// restored or removed the affected calls, so this applies only the exact
     /// inverse still meaningful against the surviving call domain.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn compensate_unrecorded_call_transition_effect(
         &mut self,
         transition: &CallTransition,
@@ -863,7 +863,7 @@ impl Controller {
         compensation
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn abort_call_transitions_for_pbx(
         &mut self,
         pbx_id: PbxCallId,
@@ -1538,7 +1538,7 @@ impl Controller {
             return Vec::new();
         }
         let appearance_ids = call.appearance_ids.clone();
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         self.cancel_auto_answers_for_pbx(winner.pbx_id);
         self.call_waiting_tones.remove(&call_id);
         let previous_active = self
@@ -1734,7 +1734,7 @@ impl Controller {
         effects
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn set_auto_answer_request(
         &mut self,
         pbx_id: PbxCallId,
@@ -1752,7 +1752,7 @@ impl Controller {
         true
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn has_auto_answer_request(&self, pbx_id: PbxCallId) -> bool {
         self.auto_answer_requests.contains_key(&pbx_id)
     }
@@ -1761,7 +1761,7 @@ impl Controller {
     /// successfully queued the inbound presentation. Each eligible shared
     /// appearance receives an independent generation; the first valid due
     /// generation claims the PBX call and cancels its peers.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn schedule_auto_answers(
         &mut self,
         pbx_id: PbxCallId,
@@ -1806,7 +1806,7 @@ impl Controller {
         Ok(call_ids.len())
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn expire_auto_answers(&mut self, now: Instant) -> Vec<CallTransition> {
         let mut due = self
             .pending_auto_answers
@@ -1856,7 +1856,7 @@ impl Controller {
         transitions
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn begin_active_call_switch_transaction_for_auto_answer(
         &mut self,
         pending: PendingAutoAnswer,
@@ -1902,7 +1902,7 @@ impl Controller {
         Ok(transition)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn device_can_auto_answer(
         &self,
         device_id: &DeviceId,
@@ -1941,7 +1941,7 @@ impl Controller {
                 })
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn cancel_auto_answers_for_pbx(
         &mut self,
         pbx_id: PbxCallId,
@@ -2335,7 +2335,7 @@ impl Controller {
         call_id: CallId,
         cleanup_current_appearance: bool,
     ) -> Vec<DriverEffect> {
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         if let Some(effect) = self.complete_remote_hangup(call_id) {
             return vec![effect];
         }
@@ -2428,7 +2428,7 @@ impl Controller {
     /// active handset presentation up for a bounded remote-hangup tone.
     /// Conference, transfer, barge, held/ringing and in-flight switch state
     /// always take the ordinary immediate cleanup path.
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn begin_remote_hangup(
         &mut self,
         pbx_id: PbxCallId,
@@ -2491,7 +2491,7 @@ impl Controller {
         })
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn expire_remote_hangups(&mut self, now: Instant) -> Vec<DriverEffect> {
         let mut due = self
             .pending_remote_hangups
@@ -2505,7 +2505,7 @@ impl Controller {
             .collect()
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn complete_remote_hangup_token(
         &mut self,
         token: RemoteHangupToken,
@@ -2517,7 +2517,7 @@ impl Controller {
         self.complete_remote_hangup(call_id)
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn complete_remote_hangup(&mut self, call_id: CallId) -> Option<DriverEffect> {
         let pending = self.pending_remote_hangups.remove(&call_id)?;
         Some(
@@ -2531,7 +2531,7 @@ impl Controller {
         )
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn drain_remote_hangups(&mut self) -> Vec<DriverEffect> {
         let mut pending = self
             .pending_remote_hangups
@@ -2545,7 +2545,7 @@ impl Controller {
             .collect()
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn remote_hangup_owner(
         &self,
         pbx_id: PbxCallId,
@@ -2580,7 +2580,7 @@ impl Controller {
         Some(owner.clone())
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn allocate_remote_hangup_token(
         &mut self,
     ) -> Option<RemoteHangupToken> {
@@ -2592,9 +2592,9 @@ impl Controller {
 
     pub fn pbx_hangup_with_effects(&mut self, pbx_id: PbxCallId) -> Option<PbxHangupOutcome> {
         let transition_primary = self.primary_call_by_pbx(pbx_id);
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         let transition_effects = self.abort_call_transitions_for_pbx(pbx_id);
-        #[cfg(not(any(test, feature = "asterisk-22", feature = "asterisk-23")))]
+        #[cfg(not(any(test, feature = "asterisk-22", feature = "asterisk-latest")))]
         let transition_effects = Vec::new();
         if !transition_effects.is_empty() && !self.call_registry.pbx.contains_key(&pbx_id) {
             return Some(PbxHangupOutcome {
@@ -3291,7 +3291,7 @@ impl Controller {
         }
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn allocate_call_transition_id(
         &mut self,
     ) -> CallTransitionId {
@@ -3304,7 +3304,7 @@ impl Controller {
         }
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn call_domain_snapshot(&self) -> CallDomainSnapshot {
         CallDomainSnapshot {
             devices: self.devices.clone(),
@@ -3318,7 +3318,7 @@ impl Controller {
         }
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(in crate::runtime::controller) fn restore_call_domain(
         &mut self,
         snapshot: &CallDomainSnapshot,
@@ -3566,7 +3566,7 @@ impl Controller {
         }
         self.redirect_claims.remove(&pbx_id);
         self.shared_control_claims.remove(&pbx_id);
-        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-23"))]
+        #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
         self.cancel_auto_answers_for_pbx(pbx_id);
         let appearance_ids = self.call_registry.pbx.get(&pbx_id)?.appearance_ids.clone();
         let mut primary = appearance_ids
