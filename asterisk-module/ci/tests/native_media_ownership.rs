@@ -623,7 +623,10 @@ fn cli_device_controls_are_bounded_and_share_exact_raii_registration() {
     assert!(driver.contains("StaticDescriptor<[sys::ast_cli_entry; CLI_ENTRY_COUNT]>"));
     assert!(driver.contains("c\"sccp version\""));
     assert!(driver.contains("execute_version_cli(invocation.fd)"));
+    assert!(exports.contains("#[cfg(feature = \"telemetry\")]"));
+    assert!(exports.contains("concat!(env!(\"CARGO_PKG_VERSION\"), \" [DEBUG]\\n\")"));
     assert!(exports.contains("concat!(env!(\"CARGO_PKG_VERSION\"), \"\\n\")"));
+    assert!(exports.contains("cli_write(fd, VERSION_CLI_OUTPUT)"));
     assert!(driver.contains("ResetMode::Reset"));
     assert!(driver.contains("ResetMode::Restart"));
     assert!(driver.contains("required_c_text("));

@@ -1410,8 +1410,13 @@ pub fn line_device_state(line: &str) -> DeviceState {
     device_state(&access, line)
 }
 
+#[cfg(feature = "telemetry")]
+const VERSION_CLI_OUTPUT: &str = concat!(env!("CARGO_PKG_VERSION"), " [DEBUG]\n");
+#[cfg(not(feature = "telemetry"))]
+const VERSION_CLI_OUTPUT: &str = concat!(env!("CARGO_PKG_VERSION"), "\n");
+
 pub fn execute_version_cli(fd: c_int) {
-    raw::system::cli_write(fd, concat!(env!("CARGO_PKG_VERSION"), "\n"));
+    raw::system::cli_write(fd, VERSION_CLI_OUTPUT);
 }
 
 pub fn execute_reload_cli(fd: c_int, arguments: &[String]) {
