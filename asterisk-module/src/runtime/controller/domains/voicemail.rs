@@ -50,16 +50,6 @@ impl Controller {
         })
     }
 
-    pub fn voicemail_generation_is_active(
-        &self,
-        device_id: &DeviceId,
-        transaction_id: VoicemailTransactionId,
-    ) -> bool {
-        self.voicemail
-            .get(device_id)
-            .is_some_and(|transaction| transaction.id == transaction_id)
-    }
-
     pub fn abort_voicemail(
         &mut self,
         device_id: &DeviceId,

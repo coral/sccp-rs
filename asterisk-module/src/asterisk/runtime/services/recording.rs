@@ -8,9 +8,9 @@ use super::{
     RecordingServiceRequest, RecordingSessionControl as _, RecordingState, RecordingTarget,
     RecordingTogglePlan, RecordingToggleRejection, RuntimeRecordingSession,
     RuntimeRecordingTrigger, RuntimeRecordings, ServiceOutcome, ServiceProviderError, ast_log,
-    controller_step, enqueue_recording_session_change, ordered_recording_start,
-    ordered_recording_stop, plan_recording_toggle, prepare_anchor_retarget,
-    prepare_direct_retarget, send_confirmed_service,
+    enqueue_recording_session_change, ordered_recording_start, ordered_recording_stop,
+    plan_recording_toggle, prepare_anchor_retarget, prepare_direct_retarget,
+    send_confirmed_service,
 };
 
 fn semantic_recording_button_state(armed: bool, active: bool) -> RecordingButtonState {
@@ -39,11 +39,12 @@ fn publish_recording_button_semantics(access: &Access, device_id: &DeviceId, act
     {
         return;
     }
-    let armed = controller_step(&access.shared.controller, |controller| {
-        controller
-            .feature_state(device_id)
-            .is_some_and(|features| features.recording_armed)
-    });
+    let armed = access
+        .shared
+        .controller
+        .snapshot()
+        .feature_state(device_id)
+        .is_some_and(|features| features.recording_armed);
     access.spawn_phone(PhoneCommand::new(
         device_id.clone(),
         PhoneCommandAction::SetRecordingButtonStatus {
@@ -75,14 +76,15 @@ pub async fn recording_service_operation(
         bridged_only,
         direction,
     } = request;
-    let current_owner = controller_step(&access.shared.controller, |controller| {
-        controller
-            .active_or_primary_call_by_pbx(call_id)
-            .map(|call| super::RuntimeRecordingOwner {
-                device_id: call.device_id.clone(),
-                handset_call_id: call.sccp_id,
-            })
-    });
+    let current_owner = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(call_id)
+        .map(|call| super::RuntimeRecordingOwner {
+            device_id: call.device_id.clone(),
+            handset_call_id: call.sccp_id,
+        });
     let remembered_owner = recordings.owner(call_id).cloned();
     let owner = match command {
         AmiRecordingCommand::Start => current_owner,
@@ -115,7 +117,9 @@ pub async fn recording_service_operation(
                     enqueue_recording_session_change(&shared, call_id);
                 }
             });
-            let mutation = MediaAnchorMutation::acquire(access).await;
+            let mutation = MediaAnchorMutation::acquire(access, call_id)
+                .await
+                .ok_or(ServiceProviderError::RecordingFailed)?;
             let pending = PendingRecordingAnchor::acquire(access, call_id, &mutation)
                 .map_err(|_| ServiceProviderError::RecordingFailed)?;
             let mutation_ref = &mutation;
@@ -165,7 +169,9 @@ pub async fn recording_service_operation(
             .await
             {
                 if let Ok(session) = recordings.sessions.take(call_id) {
-                    let mutation = MediaAnchorMutation::acquire(access).await;
+                    let mutation = MediaAnchorMutation::acquire(access, call_id)
+                        .await
+                        .ok_or(ServiceProviderError::RecordingFailed)?;
                     if let Err((_, session)) =
                         stop_and_restore_recording(access, session, &mutation).await
                     {
@@ -206,7 +212,9 @@ pub async fn recording_service_operation(
                 return Err(error);
             }
             publish_recording_button_state(access, recordings, &device_id);
-            let mutation = MediaAnchorMutation::acquire(access).await;
+            let mutation = MediaAnchorMutation::acquire(access, call_id)
+                .await
+                .ok_or(ServiceProviderError::RecordingFailed)?;
             if let Err((error, session)) =
                 stop_and_restore_recording(access, session, &mutation).await
             {
@@ -262,7 +270,7 @@ pub async fn recording_service_operation(
 async fn confirm_recording_anchor(
     access: &Access,
     pending: PendingRecordingAnchor,
-    _mutation: &MediaAnchorMutation<'_>,
+    _mutation: &MediaAnchorMutation,
 ) -> Result<ConfirmedRecordingAnchor, ServiceProviderError> {
     let Some(call) = pending.direct_call() else {
         return Ok(pending.confirm());
@@ -280,7 +288,7 @@ async fn confirm_recording_anchor(
 async fn restore_recording_anchor(
     access: &Access,
     anchor: &mut ConfirmedRecordingAnchor,
-    _mutation: &MediaAnchorMutation<'_>,
+    _mutation: &MediaAnchorMutation,
 ) -> Result<(), ServiceProviderError> {
     if let Some(call) = anchor.restore_call() {
         let retarget =
@@ -298,7 +306,7 @@ async fn restore_recording_anchor(
 pub(super) async fn restore_recording_session(
     access: &Access,
     mut session: RuntimeRecordingSession,
-    mutation: &MediaAnchorMutation<'_>,
+    mutation: &MediaAnchorMutation,
 ) -> Result<(), (ServiceProviderError, RuntimeRecordingSession)> {
     if let Err(error) = restore_recording_anchor(access, session.anchor_mut(), mutation).await {
         return Err((error, session));
@@ -309,7 +317,7 @@ pub(super) async fn restore_recording_session(
 async fn stop_and_restore_recording(
     access: &Access,
     session: RuntimeRecordingSession,
-    mutation: &MediaAnchorMutation<'_>,
+    mutation: &MediaAnchorMutation,
 ) -> Result<(), (ServiceProviderError, RuntimeRecordingSession)> {
     ordered_recording_stop(
         session,
@@ -335,16 +343,19 @@ pub(super) async fn handle_recording_trigger(
             return;
         }
     };
-    let call = controller_step(&access.shared.controller, |controller| {
-        controller.active_or_primary_call_by_pbx(pbx_id)
-    });
+    let call = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(pbx_id);
     let Some(call) = call.filter(|call| {
         matches!(call.state, CallState::Connected | CallState::Barged)
-            && controller_step(&access.shared.controller, |controller| {
-                controller
-                    .feature_state(&call.device_id)
-                    .is_some_and(|features| features.recording_armed)
-            })
+            && access
+                .shared
+                .controller
+                .snapshot()
+                .feature_state(&call.device_id)
+                .is_some_and(|features| features.recording_armed)
     }) else {
         return;
     };
@@ -392,10 +403,12 @@ pub async fn toggle_monitor_recording(
     device_id: &DeviceId,
     handset_call_id: CallId,
 ) -> Result<ServiceOutcome, ServiceProviderError> {
-    let call = controller_step(&access.shared.controller, |controller| {
-        controller.call(handset_call_id)
-    })
-    .ok_or(ServiceProviderError::CallNotFound)?;
+    let call = access
+        .shared
+        .controller
+        .snapshot()
+        .call(handset_call_id)
+        .ok_or(ServiceProviderError::CallNotFound)?;
     let active = recordings.sessions.contains(call.pbx_id);
     let plan = plan_recording_toggle(
         device_id,

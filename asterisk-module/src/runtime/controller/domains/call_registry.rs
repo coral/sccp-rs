@@ -3,6 +3,20 @@ use super::super::*;
 impl Controller {
     pub fn with_digit_timeouts(first_digit: Duration, interdigit: Duration) -> Self {
         Self {
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            parking: Default::default(),
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            mobility: Default::default(),
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            mobility_prompts: HashMap::new(),
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            next_mobility_prompt: 0,
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            forwarding_entries: Default::default(),
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            call_runtime: HashMap::new(),
+            #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+            no_answer_timers: Default::default(),
             next_pbx_id: 1,
             next_appearance_id: 1,
             next_bridge_id: 1,
@@ -120,28 +134,6 @@ impl Controller {
         Some(RegisterSessionOutcome { cleanup, replaced })
     }
 
-    pub fn session_is_current(
-        &self,
-        device: &DeviceId,
-        session_generation: SessionGeneration,
-    ) -> bool {
-        self.devices
-            .get(device)
-            .is_some_and(|state| state.session_generation == session_generation)
-    }
-
-    pub fn registered_device(&self, device: &DeviceId) -> Option<&RegisteredDevice> {
-        self.devices.get(device)
-    }
-
-    pub fn registered_devices(&self) -> impl Iterator<Item = (&DeviceId, &RegisteredDevice)> {
-        self.devices.iter()
-    }
-
-    pub fn feature_state(&self, device: &DeviceId) -> Option<&DeviceFeatureState> {
-        self.features.get(device)
-    }
-
     pub fn feature_state_mut(&mut self, device: &DeviceId) -> &mut DeviceFeatureState {
         self.features.entry(device.clone()).or_default()
     }
@@ -185,14 +177,6 @@ impl Controller {
         call.privacy = enabled;
         self.refresh_conference_participant_identity(pbx_id);
         true
-    }
-
-    pub fn call_privacy(&self, call_id: CallId) -> Option<bool> {
-        let appearance = self.appearance_for_call(call_id)?;
-        self.call_registry
-            .pbx
-            .get(&appearance.pbx_id)
-            .map(|call| call.privacy)
     }
 
     pub(in crate::runtime::controller) fn set_active_call(
@@ -1752,11 +1736,6 @@ impl Controller {
         true
     }
 
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-    pub(crate) fn has_auto_answer_request(&self, pbx_id: PbxCallId) -> bool {
-        self.auto_answer_requests.contains_key(&pbx_id)
-    }
-
     /// Capture the current normalized delay/tone only after the adapter has
     /// successfully queued the inbound presentation. Each eligible shared
     /// appearance receives an independent generation; the first valid due
@@ -2294,17 +2273,6 @@ impl Controller {
         ])
     }
 
-    pub fn barge_session(&self, call_id: CallId) -> Option<&BargeSession> {
-        self.barges.by_handset.get(&call_id)
-    }
-
-    pub fn barge_session_by_pbx(&self, pbx_id: PbxCallId) -> Option<&BargeSession> {
-        self.barges
-            .by_pbx
-            .get(&pbx_id)
-            .and_then(|call_id| self.barges.by_handset.get(call_id))
-    }
-
     /// Roll back a failed adapter operation. `bridge_joined` and
     /// `channel_created` describe which preceding effects completed.
     pub fn abort_barge(
@@ -2474,6 +2442,7 @@ impl Controller {
             self.pending_remote_hangups.insert(
                 owner.sccp_id,
                 PendingRemoteHangup {
+                    deferred: false,
                     token,
                     device_id: owner.device_id,
                     call_id: owner.sccp_id,
@@ -2496,7 +2465,7 @@ impl Controller {
         let mut due = self
             .pending_remote_hangups
             .values()
-            .filter(|pending| pending.deadline <= now)
+            .filter(|pending| !pending.deferred && pending.deadline <= now)
             .map(|pending| (pending.deadline, pending.token, pending.call_id))
             .collect::<Vec<_>>();
         due.sort_by_key(|(deadline, token, call_id)| (*deadline, token.0, call_id.0));
@@ -2724,67 +2693,6 @@ impl Controller {
         Some(PbxHangupOutcome { primary, effects })
     }
 
-    pub fn call(&self, call_id: CallId) -> Option<CallSnapshot> {
-        let appearance_id = self.call_registry.by_sccp.get(&call_id)?;
-        self.call_snapshot(*appearance_id)
-    }
-
-    pub fn call_state(&self, call_id: CallId) -> Option<CallState> {
-        self.appearance_for_call(call_id)
-            .map(|appearance| appearance.state)
-    }
-
-    pub fn call_pbx_id(&self, call_id: CallId) -> Option<PbxCallId> {
-        self.appearance_for_call(call_id)
-            .map(|appearance| appearance.pbx_id)
-    }
-
-    pub fn call_device_id(&self, call_id: CallId) -> Option<&DeviceId> {
-        self.appearance_for_call(call_id)
-            .map(|appearance| &appearance.device_id)
-    }
-
-    pub fn call_line_instance(&self, call_id: CallId) -> Option<u32> {
-        self.appearance_for_call(call_id)
-            .map(|appearance| appearance.line_instance)
-    }
-
-    pub fn primary_call_by_pbx(&self, pbx_id: PbxCallId) -> Option<CallSnapshot> {
-        self.call_registry
-            .pbx
-            .get(&pbx_id)
-            .and_then(|call| call.appearance_ids.first())
-            .and_then(|appearance_id| self.call_snapshot(*appearance_id))
-    }
-
-    pub fn active_call_by_pbx(&self, pbx_id: PbxCallId) -> Option<CallSnapshot> {
-        let appearance_id = self.call_registry.pbx.get(&pbx_id)?.active_appearance?;
-        self.call_snapshot(appearance_id)
-    }
-
-    pub fn active_or_primary_call_by_pbx(&self, pbx_id: PbxCallId) -> Option<CallSnapshot> {
-        self.active_call_by_pbx(pbx_id)
-            .or_else(|| self.primary_call_by_pbx(pbx_id))
-    }
-
-    pub fn calls(&self) -> impl Iterator<Item = CallSnapshot> + '_ {
-        self.call_registry
-            .appearances
-            .keys()
-            .filter_map(|appearance_id| self.call_snapshot(*appearance_id))
-    }
-
-    pub fn pbx_call(&self, pbx_id: PbxCallId) -> Option<&PbxCall> {
-        self.call_registry.pbx.get(&pbx_id)
-    }
-
-    pub fn call_metadata(&self, pbx_id: PbxCallId) -> Option<&CallMetadata> {
-        self.call_registry
-            .pbx
-            .get(&pbx_id)
-            .map(|call| &call.metadata)
-    }
-
     /// Atomically replaces PBX-owned channel metadata after the complete value
     /// validates.
     pub fn set_call_metadata(
@@ -2803,32 +2711,12 @@ impl Controller {
         Ok(true)
     }
 
-    pub fn active_call_id(&self, pbx_id: PbxCallId) -> Option<CallId> {
-        self.active_call_by_pbx(pbx_id).map(|call| call.sccp_id)
-    }
-
-    pub fn call_appearance(&self, appearance_id: CallAppearanceId) -> Option<&CallAppearance> {
-        self.call_registry.appearances.get(&appearance_id)
-    }
-
-    pub fn appearance_for_call(&self, call_id: CallId) -> Option<&CallAppearance> {
-        self.call_registry
-            .by_sccp
-            .get(&call_id)
-            .and_then(|appearance_id| self.call_registry.appearances.get(appearance_id))
-    }
-
     pub(in crate::runtime::controller) fn appearance_for_call_mut(
         &mut self,
         call_id: CallId,
     ) -> Option<&mut CallAppearance> {
         let appearance_id = self.call_registry.by_sccp.get(&call_id)?;
         self.call_registry.appearances.get_mut(appearance_id)
-    }
-
-    pub fn call_info(&self, call_id: CallId) -> Option<&CallInfo> {
-        self.appearance_for_call(call_id)
-            .map(|appearance| &appearance.info)
     }
 
     /// Replaces one appearance's party metadata and returns its handset update.
@@ -2935,63 +2823,6 @@ impl Controller {
             }
             .into(),
         ]
-    }
-
-    pub fn appearances_for_device(
-        &self,
-        device: &DeviceId,
-    ) -> impl Iterator<Item = &CallAppearance> {
-        self.call_registry
-            .by_device
-            .get(device)
-            .into_iter()
-            .flatten()
-            .filter_map(|appearance_id| self.call_registry.appearances.get(appearance_id))
-    }
-
-    pub fn appearances_for_pbx(&self, pbx_id: PbxCallId) -> impl Iterator<Item = &CallAppearance> {
-        self.call_registry
-            .pbx
-            .get(&pbx_id)
-            .into_iter()
-            .flat_map(|call| call.appearance_ids.iter())
-            .filter_map(|appearance_id| self.call_registry.appearances.get(appearance_id))
-    }
-
-    pub(in crate::runtime::controller) fn inbound_offer_for_appearance(
-        &self,
-        appearance: &CallAppearance,
-    ) -> InboundOffer {
-        InboundOffer {
-            device_id: appearance.device_id.clone(),
-            line_instance: appearance.line_instance,
-            call_id: appearance.sccp_id,
-            ring_mode: appearance.ring_mode,
-            state: if self.device_has_active_call(&appearance.device_id) {
-                HandsetCallState::CallWaiting
-            } else {
-                HandsetCallState::RingIn
-            },
-        }
-    }
-
-    pub(in crate::runtime::controller) fn device_has_active_call(
-        &self,
-        device_id: &DeviceId,
-    ) -> bool {
-        self.devices
-            .get(device_id)
-            .and_then(|device| device.active_call)
-            .and_then(|call_id| self.appearance_for_call(call_id))
-            .is_some_and(|appearance| {
-                matches!(
-                    appearance.state,
-                    CallState::Collecting
-                        | CallState::Calling
-                        | CallState::Connected
-                        | CallState::TransferCollecting
-                )
-            })
     }
 
     /// Remove a still-ringing PBX call from every handset before the adapter
@@ -3583,30 +3414,5 @@ impl Controller {
             primary.digit_deadline = None;
         }
         Some((call, primary))
-    }
-
-    pub(in crate::runtime::controller) fn call_snapshot(
-        &self,
-        appearance_id: CallAppearanceId,
-    ) -> Option<CallSnapshot> {
-        let appearance = self.call_registry.appearances.get(&appearance_id)?;
-        let call = self.call_registry.pbx.get(&appearance.pbx_id)?;
-        Some(CallSnapshot {
-            sccp_id: appearance.sccp_id,
-            pbx_id: call.id,
-            device_id: appearance.device_id.clone(),
-            line_instance: appearance.line_instance,
-            line: call.line.clone(),
-            direction: call.direction,
-            state: appearance.state,
-            digits: call.digits.clone(),
-            info: appearance.info.clone(),
-            metadata: call.metadata.clone(),
-            codec: appearance.codec,
-            audio: appearance.audio,
-            audio_transmit: appearance.audio_transmit,
-            video: appearance.video.clone(),
-            digit_deadline: call.digit_deadline,
-        })
     }
 }

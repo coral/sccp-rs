@@ -21,6 +21,7 @@ pub(crate) enum ConferenceTaskStartError {
     AlreadyRunning,
     ShuttingDown,
     GenerationExhausted,
+    Exhausted,
 }
 
 struct ActiveTask<C> {
@@ -29,6 +30,7 @@ struct ActiveTask<C> {
 }
 
 pub(crate) struct ConferenceTaskRegistry<C> {
+    capacity: usize,
     next_generation: u64,
     active: HashMap<PbxCallId, ActiveTask<C>>,
     tasks: JoinSet<ConferenceTaskToken>,
@@ -38,7 +40,15 @@ pub(crate) struct ConferenceTaskRegistry<C> {
 
 impl<C> Default for ConferenceTaskRegistry<C> {
     fn default() -> Self {
+        Self::with_capacity(super::mailbox::RUNTIME_MAILBOX_CAPACITY)
+    }
+}
+
+impl<C> ConferenceTaskRegistry<C> {
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0);
         Self {
+            capacity,
             next_generation: 1,
             active: HashMap::new(),
             tasks: JoinSet::new(),
@@ -60,12 +70,14 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
         F: FnOnce(ConferenceTaskToken) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.reap_finished();
         if self.shutting_down {
             return Err(ConferenceTaskStartError::ShuttingDown);
         }
         if self.active.contains_key(&call_id) {
             return Err(ConferenceTaskStartError::AlreadyRunning);
+        }
+        if self.tasks.len() == self.capacity {
+            return Err(ConferenceTaskStartError::Exhausted);
         }
         let generation = self.next_generation;
         self.next_generation = self
@@ -84,9 +96,10 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
             },
         );
         let future = task(token);
-        let task = self.tasks.spawn_on(
-            async move {
-                future.await;
+        let worker_runtime = runtime.clone();
+        let task = self.tasks.spawn_blocking_on(
+            move || {
+                worker_runtime.block_on(future);
                 token
             },
             runtime,
@@ -96,7 +109,6 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
     }
 
     pub(crate) fn complete(&mut self, token: ConferenceTaskToken) -> bool {
-        self.reap_finished();
         if self
             .active
             .get(&token.call_id)
@@ -109,7 +121,6 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
     }
 
     pub(crate) fn cancel(&mut self, call_id: PbxCallId) -> Option<C> {
-        self.reap_finished();
         self.active
             .remove(&call_id)
             .map(|active| active.cancellation)
@@ -126,7 +137,8 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
         (cancellations, std::mem::take(&mut self.tasks))
     }
 
-    fn reap_finished(&mut self) {
+    pub(crate) fn reap_finished(&mut self) -> Vec<C> {
+        let mut cancellations = Vec::new();
         while let Some(result) = self.tasks.try_join_next_with_id() {
             let token = match result {
                 Ok((task_id, _)) => {
@@ -147,9 +159,10 @@ impl<C: ConferenceTaskCancellation> ConferenceTaskRegistry<C> {
                 .is_some_and(|active| active.token == token)
                 && let Some(active) = self.active.remove(&token.call_id)
             {
-                active.cancellation.cancel();
+                cancellations.push(active.cancellation);
             }
         }
+        cancellations
     }
 }
 
@@ -285,6 +298,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_native_work_retains_admission_until_its_actual_job_is_joined() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = ConferenceTaskRegistry::with_capacity(1);
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (release, blocked) = tokio::sync::oneshot::channel();
+        registry
+            .start(
+                &Handle::current(),
+                PbxCallId(1),
+                cancellation(&calls, 1),
+                |_| async move {
+                    let _ = started.send(());
+                    let _ = blocked.await;
+                },
+            )
+            .unwrap();
+        running.await.unwrap();
+        registry.cancel(PbxCallId(1)).unwrap().cancel();
+        assert_eq!(
+            registry.start(
+                &Handle::current(),
+                PbxCallId(2),
+                cancellation(&calls, 2),
+                |_| async {}
+            ),
+            Err(ConferenceTaskStartError::Exhausted)
+        );
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !registry.tasks.is_empty() {
+                assert!(registry.reap_finished().is_empty());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            registry
+                .start(
+                    &Handle::current(),
+                    PbxCallId(2),
+                    cancellation(&calls, 2),
+                    |_| async {}
+                )
+                .is_ok()
+        );
+        let (cancellations, mut jobs) = registry.begin_shutdown();
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+        while jobs.join_next().await.is_some() {}
+        assert_eq!(*calls.lock().unwrap(), [PbxCallId(1), PbxCallId(2)]);
+    }
+
+    #[tokio::test]
     async fn panicked_task_releases_only_its_exact_generation() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut registry = ConferenceTaskRegistry::default();
@@ -297,13 +365,21 @@ mod tests {
             )
             .unwrap();
 
-        for _ in 0..100 {
-            registry.reap_finished();
-            if !registry.active.contains_key(&PbxCallId(7)) {
-                break;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let cancellations = registry.reap_finished();
+                assert!(calls.lock().unwrap().is_empty());
+                for cancellation in cancellations {
+                    cancellation.cancel();
+                }
+                if !registry.active.contains_key(&PbxCallId(7)) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .unwrap();
 
         assert!(!registry.active.contains_key(&PbxCallId(7)));
         assert_eq!(*calls.lock().unwrap(), [PbxCallId(7)]);

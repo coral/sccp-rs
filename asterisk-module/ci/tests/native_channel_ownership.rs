@@ -69,7 +69,38 @@ fn channel_request_stages_every_guarded_allocation_before_commit() {
 
     let channel = source("src/asterisk/runtime/channel.rs");
     let remove = rust_item(&channel, "pub fn remove_channel");
-    assert!(remove.contains("forwarded_calls"));
-    assert!(remove.contains("clear_no_answer_route(access, pbx_id)"));
-    assert!(remove.contains("audio_packet_ms"));
+    assert!(remove.contains("controller.retire_call_runtime(pbx_id)"));
+    let records = source("src/runtime/controller/records.rs");
+    let retire = rust_item(&records, "pub(crate) fn retire_call_runtime");
+    assert!(retire.contains("call_runtime.remove(&pbx_id)"));
+    assert!(retire.contains("clear_no_answer_route(pbx_id)"));
+    let owner = source("src/runtime/controller/ownership.rs");
+    let publish = rust_item(&owner, "fn publish");
+    assert!(
+        publish.find("retire_ended_call_records()").unwrap()
+            < publish.find("controller.snapshot()").unwrap()
+    );
+}
+#[test]
+fn unload_quiesces_channel_allocation_before_unregistering_native_callbacks() {
+    let exports = source("src/asterisk/exports.rs");
+    let prepare = rust_item(&exports, "pub fn prepare_module_unload");
+    let suspend = prepare.find("channel_allocations.try_suspend()").unwrap();
+    let inspect = prepare
+        .find("channels.lock_unpoisoned().is_empty()")
+        .unwrap();
+    let resume = prepare.find("channel_allocations.resume()").unwrap();
+    assert!(suspend < inspect && inspect < resume);
+    let driver = source("src/asterisk/direct/channel_driver.rs");
+    let unload = rust_item(&driver, "pub(super) fn unload");
+    assert!(
+        unload.find("prepare_module_unload()?").unwrap()
+            < unload.find("native_registration().take()").unwrap()
+    );
+    let channel = source("src/asterisk/runtime/channel.rs");
+    let allocate = rust_item(&channel, "pub fn allocate_channel");
+    assert!(
+        allocate.find("channel_allocations").unwrap()
+            < allocate.find("native_channel::allocate_channel").unwrap()
+    );
 }

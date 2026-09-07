@@ -27,7 +27,7 @@ const MAX_EVENT_FIELDS: usize = 16;
 const MAX_FIELD_VALUE_BYTES: usize = 1024;
 const MAX_EVENT_BYTES: usize = 8 * 1024;
 
-const EVENT_LIMITS: ManagerLimits = ManagerLimits {
+pub(crate) const EVENT_LIMITS: ManagerLimits = ManagerLimits {
     max_fields: MAX_EVENT_FIELDS,
     max_field_name_bytes: 64,
     max_field_value_bytes: MAX_FIELD_VALUE_BYTES,
@@ -306,9 +306,33 @@ impl<B: ManagerBackend> ManagementEventBackend for B {
     }
 }
 
+pub(crate) struct EventSequence {
+    next: u64,
+}
+
+impl Default for EventSequence {
+    fn default() -> Self {
+        Self { next: 1 }
+    }
+}
+
+impl EventSequence {
+    pub(crate) fn prepare(
+        &mut self,
+        event: &ManagementEvent,
+    ) -> Result<(u64, ManagerEvent), AmiEventError> {
+        let sequence = self.next;
+        let event = build_manager_event(event, sequence)?;
+        self.next = sequence
+            .checked_add(1)
+            .ok_or(AmiEventError::SequenceExhausted)?;
+        Ok((sequence, event))
+    }
+}
+
 struct PublisherState {
     accepting: bool,
-    next_sequence: u64,
+    sequence: EventSequence,
 }
 
 pub struct AmiEventPublisher<B> {
@@ -322,7 +346,7 @@ impl<B: ManagementEventBackend> AmiEventPublisher<B> {
             backend,
             state: Mutex::new(PublisherState {
                 accepting: true,
-                next_sequence: 1,
+                sequence: EventSequence::default(),
             }),
         }
     }
@@ -333,12 +357,7 @@ impl<B: ManagementEventBackend> AmiEventPublisher<B> {
         if !state.accepting {
             return Err(AmiEventError::Closed);
         }
-        let sequence = state.next_sequence;
-        let event = build_manager_event(event, sequence)?;
-        state.next_sequence = state
-            .next_sequence
-            .checked_add(1)
-            .ok_or(AmiEventError::SequenceExhausted)?;
+        let (sequence, event) = state.sequence.prepare(event)?;
         self.backend.publish(&event, EVENT_LIMITS)?;
         Ok(sequence)
     }
@@ -451,7 +470,7 @@ const fn optional(name: &'static str, kind: ValueKind) -> FieldSpec {
     }
 }
 
-fn build_manager_event(
+pub(crate) fn build_manager_event(
     event: &ManagementEvent,
     sequence: u64,
 ) -> Result<ManagerEvent, AmiEventError> {

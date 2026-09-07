@@ -6,40 +6,59 @@ use super::{
     FeatureControlProviderError, FeatureStoreError, ForwardingCommit, ForwardingDestination,
     ForwardingDigitOutcome, ForwardingEntryTiming, ForwardingExpiryOutcome, ForwardingKind,
     ForwardingRejection, ForwardingWriteOutcome, Instant, LineInstance, LogLevel,
-    MANAGER_CONTROL_DELIVERY_TIMEOUT, ManagementEvent, ModuleConfig, MutexExt as _, PbxAudioFormat,
-    PbxEffect, PhoneCommand, PhoneCommandAction, PhoneDndButtonMode, PhoneDndMode,
-    RuntimeRecordings, SoftKey, VoicemailNativeOutcome, VoicemailPlan, VoicemailTarget, ast_log,
-    configure_pickup_policy, configured_feature_state, controller_step, default_button_mode,
-    dial_terminator_digit, execute_effects, execute_forwarding_mutation, feature_changes,
-    feature_event, forwarding_ui_line_instances, handset_status_message, preferred_codec,
-    publish_device_lines, publish_line, publish_recording_button_state, toggle_monitor_recording,
-    with_channel,
+    MANAGER_CONTROL_DELIVERY_TIMEOUT, ManagementEvent, ModuleConfig, PbxAudioFormat, PbxEffect,
+    PhoneCommand, PhoneCommandAction, PhoneDndButtonMode, PhoneDndMode, RuntimeRecordings, SoftKey,
+    VoicemailNativeOutcome, VoicemailPlan, VoicemailTarget, ast_log, configure_pickup_policy,
+    configured_feature_state, default_button_mode, dial_terminator_digit, execute_effects,
+    execute_forwarding_mutation, feature_changes, feature_event, forwarding_ui_line_instances,
+    handset_status_message, preferred_codec, publish_device_lines, publish_line,
+    publish_recording_button_state, toggle_monitor_recording, with_channel,
 };
 use crate::runtime::backend::SupplementaryBackend as _;
+use crate::runtime::configuration_transaction::{ConfigurationLease, ConfigurationOperation};
+use crate::state::features::FeatureMutation;
 
-pub fn update_device_features_locked(
+pub fn update_device_features(
     access: &Access,
     config: &ModuleConfig,
     device_id: &DeviceId,
-    mutation: impl FnOnce(&mut DeviceFeatureState),
+    mutation: FeatureMutation,
+    _transaction: &ConfigurationLease,
 ) -> Result<Option<(DeviceFeatureState, DeviceFeatureState)>, FeatureStoreError> {
     let Some(defaults) = configured_feature_state(config, device_id) else {
         return Ok(None);
     };
-    let current = controller_step(&access.shared.controller, |controller| {
-        controller
-            .feature_state(device_id)
-            .cloned()
-            .unwrap_or_else(|| defaults.clone())
-    });
-    let next = access
+    let unavailable = || {
+        FeatureStoreError::Storage(crate::state::persistence::PersistenceError::Backend {
+            operation: "feature-state owner commit",
+        })
+    };
+    let plan = access
         .shared
-        .feature_store
-        .update(device_id, &current, &defaults, mutation)?;
-    controller_step(&access.shared.controller, |controller| {
-        controller.set_feature_state(device_id, next.clone())
-    });
-    Ok(Some((current, next)))
+        .controller
+        .prepare_device_features(device_id, defaults.clone(), mutation)
+        .map_err(|_| unavailable())?;
+    if plan.next != plan.previous {
+        access
+            .shared
+            .feature_store
+            .save(device_id, &plan.next, &defaults)?;
+    }
+    if !access
+        .shared
+        .controller
+        .commit_device_features(device_id, plan.expected, plan.next.clone())
+        .unwrap_or(false)
+    {
+        // Persistence belongs to the same reserved configuration transaction;
+        // compensate it before relinquishing the reservation on an owner failure.
+        access
+            .shared
+            .feature_store
+            .save(device_id, &plan.previous, &defaults)?;
+        return Err(unavailable());
+    }
+    Ok(Some((plan.previous, plan.next)))
 }
 
 pub fn publish_device_features(access: &Access, device_id: &DeviceId, state: &DeviceFeatureState) {
@@ -110,8 +129,9 @@ pub fn publish_device_features(access: &Access, device_id: &DeviceId, state: &De
                 .is_some_and(|button| {
                     access
                         .shared
-                        .parking_registry
-                        .lock_unpoisoned()
+                        .controller
+                        .snapshot()
+                        .parking()
                         .lot_has_calls(&button.lot)
                 }),
             _ => state
@@ -147,7 +167,7 @@ pub(super) const fn phone_dnd_button_mode(mode: DndButtonMode) -> PhoneDndButton
 }
 
 pub fn publish_ami_event(access: &Access, event: &ManagementEvent) {
-    if let Err(error) = access.shared.ami_events.publish(event) {
+    if let Err(error) = access.shared.ami_events.enqueue(event) {
         ast_log(
             LogLevel::Warning,
             &format!("unable to publish a management event: {error}"),
@@ -166,36 +186,29 @@ pub fn publish_feature_changes(
     }
 }
 
-pub async fn expire_forwarding_entries(access: &Access, now: Instant) {
-    let expired = access
-        .shared
-        .forwarding_entries
-        .lock_unpoisoned()
-        .claim_expired(now);
-    for outcome in expired {
-        match outcome {
-            ForwardingExpiryOutcome::Cancel(entry) => {
-                if send_confirmed_forwarding(
-                    access,
-                    PhoneCommand::new(
-                        entry.device_id,
-                        PhoneCommandAction::CloseCall {
-                            call_id: entry.call_id,
-                        },
-                    ),
-                )
-                .await
-                    == ForwardingWriteOutcome::Failed
-                {
-                    ast_log(
-                        LogLevel::Warning,
-                        "unable to close expired forwarding collection on the handset",
-                    );
-                }
+pub async fn execute_forwarding_expiry(access: &Access, outcome: ForwardingExpiryOutcome) {
+    match outcome {
+        ForwardingExpiryOutcome::Cancel(entry) => {
+            if send_confirmed_forwarding(
+                access,
+                PhoneCommand::new(
+                    entry.device_id,
+                    PhoneCommandAction::CloseCall {
+                        call_id: entry.call_id,
+                    },
+                ),
+            )
+            .await
+                == ForwardingWriteOutcome::Failed
+            {
+                ast_log(
+                    LogLevel::Warning,
+                    "unable to close expired forwarding collection on the handset",
+                );
             }
-            ForwardingExpiryOutcome::Commit(commit) => {
-                finish_forwarding_commit(access, commit).await;
-            }
+        }
+        ForwardingExpiryOutcome::Commit(commit) => {
+            finish_forwarding_commit(access, commit).await;
         }
     }
 }
@@ -225,24 +238,23 @@ pub fn execute_dnd_mutation(
     device_id: &DeviceId,
     request: RuntimeDndMutation,
 ) -> Result<RuntimeDndMutationOutcome, RuntimeDndMutationError> {
-    let _schedule_guard = access
+    let transaction = access
         .shared
-        .dnd_schedule_mutations
-        .lock()
+        .configuration_transactions
+        .begin(
+            ConfigurationOperation::Features,
+            Instant::now() + MANAGER_CONTROL_DELIVERY_TIMEOUT,
+        )
         .map_err(|_| RuntimeDndMutationError::Unavailable)?;
-    execute_dnd_mutation_serialized(access, device_id, request)
+    execute_dnd_mutation_serialized(access, device_id, request, &transaction)
 }
 
 pub fn execute_dnd_mutation_serialized(
     access: &Access,
     device_id: &DeviceId,
     request: RuntimeDndMutation,
+    _transaction: &ConfigurationLease,
 ) -> Result<RuntimeDndMutationOutcome, RuntimeDndMutationError> {
-    let _feature_guard = access
-        .shared
-        .feature_mutations
-        .lock()
-        .map_err(|_| RuntimeDndMutationError::Unavailable)?;
     let config = access.config();
     let device = config
         .devices
@@ -265,9 +277,13 @@ pub fn execute_dnd_mutation_serialized(
                 .ok_or(RuntimeDndMutationError::ButtonNotFound)?,
         ),
     };
-    let result = update_device_features_locked(access, &config, device_id, |state| {
-        state.dnd = mutation.apply(state.dnd);
-    });
+    let result = update_device_features(
+        access,
+        &config,
+        device_id,
+        FeatureMutation::Dnd(mutation),
+        _transaction,
+    );
     let (previous, current) = match result {
         Ok(Some(states)) => states,
         Ok(None) => return Err(RuntimeDndMutationError::DeviceNotFound),
@@ -299,14 +315,11 @@ pub(super) async fn handle_feature_soft_key(
     if soft_key == SoftKey::Private
         && let Some(call_id) = call_id
     {
-        let change = controller_step(&access.shared.controller, |controller| {
-            let call = controller.call(call_id)?;
-            let previous = controller.call_privacy(call_id)?;
-            let enabled = !previous;
-            controller
-                .set_call_privacy(call_id, enabled)
-                .then_some((call, previous, enabled))
-        });
+        let change = access
+            .shared
+            .controller
+            .toggle_call_privacy(call_id)
+            .unwrap_or_else(|_| None);
         if let Some((call, previous, enabled)) = change {
             let binding = access.line_binding(&call.device_id, call.line_instance);
             let applied = binding.is_some_and(|binding| {
@@ -316,9 +329,11 @@ pub(super) async fn handle_feature_soft_key(
                 .is_some_and(|result| result.is_ok())
             });
             if !applied {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.set_call_privacy(call_id, previous)
-                });
+                access
+                    .shared
+                    .controller
+                    .set_call_privacy(call_id, previous)
+                    .unwrap_or_else(|_| false);
             }
             let _ = access
                 .phone
@@ -356,7 +371,12 @@ pub(super) async fn handle_feature_soft_key(
         return;
     }
 
-    let _feature_guard = access.shared.feature_mutations.lock_unpoisoned();
+    let Ok(transaction) = access.shared.configuration_transactions.begin(
+        ConfigurationOperation::Features,
+        Instant::now() + MANAGER_CONTROL_DELIVERY_TIMEOUT,
+    ) else {
+        return;
+    };
     let config = access.config();
     let Some(device) = config.devices.get(&device_id) else {
         return;
@@ -372,27 +392,23 @@ pub(super) async fn handle_feature_soft_key(
     if !permitted {
         return;
     }
-    let mutation = move |state: &mut DeviceFeatureState| match soft_key {
-        SoftKey::Private => state.privacy = !state.privacy,
-        SoftKey::ForwardAll => {
-            state.forwarding.all =
-                toggle_forwarding(state.forwarding.all.take(), defaults.forwarding.all.clone());
-        }
-        SoftKey::ForwardBusy => {
-            state.forwarding.busy = toggle_forwarding(
-                state.forwarding.busy.take(),
-                defaults.forwarding.busy.clone(),
-            );
-        }
-        SoftKey::ForwardNoAnswer => {
-            state.forwarding.no_answer = toggle_forwarding(
-                state.forwarding.no_answer.take(),
-                defaults.forwarding.no_answer.clone(),
-            );
-        }
-        _ => {}
+    let mutation = match soft_key {
+        SoftKey::Private => FeatureMutation::TogglePrivacy,
+        SoftKey::ForwardAll => FeatureMutation::ToggleForwarding {
+            kind: ForwardingKind::All,
+            default: defaults.forwarding.all.clone(),
+        },
+        SoftKey::ForwardBusy => FeatureMutation::ToggleForwarding {
+            kind: ForwardingKind::Busy,
+            default: defaults.forwarding.busy.clone(),
+        },
+        SoftKey::ForwardNoAnswer => FeatureMutation::ToggleForwarding {
+            kind: ForwardingKind::NoAnswer,
+            default: defaults.forwarding.no_answer.clone(),
+        },
+        _ => return,
     };
-    match update_device_features_locked(access, &config, &device_id, mutation) {
+    match update_device_features(access, &config, &device_id, mutation, &transaction) {
         Ok(Some((previous, state))) => {
             publish_device_features(access, &device_id, &state);
             publish_feature_changes(access, &device_id, &previous, &state);
@@ -427,16 +443,17 @@ pub(super) async fn handle_forwarding_soft_key(
             ForwardingKind::Busy => device.feature_defaults.forwarding.busy_enabled,
             ForwardingKind::NoAnswer => device.feature_defaults.forwarding.no_answer_enabled,
         });
-    let current = controller_step(&access.shared.controller, |controller| {
-        controller
-            .feature_state(&device_id)
-            .and_then(|state| match kind {
-                ForwardingKind::All => state.forwarding.all.as_ref(),
-                ForwardingKind::Busy => state.forwarding.busy.as_ref(),
-                ForwardingKind::NoAnswer => state.forwarding.no_answer.as_ref(),
-            })
-            .is_some()
-    });
+    let current = access
+        .shared
+        .controller
+        .snapshot()
+        .feature_state(&device_id)
+        .and_then(|state| match kind {
+            ForwardingKind::All => state.forwarding.all.as_ref(),
+            ForwardingKind::Busy => state.forwarding.busy.as_ref(),
+            ForwardingKind::NoAnswer => state.forwarding.no_answer.as_ref(),
+        })
+        .is_some();
     let timing = ForwardingEntryTiming {
         now: Instant::now(),
         first_digit_timeout: Duration::from_millis(config.general.first_digit_timeout_ms),
@@ -472,14 +489,18 @@ pub(super) async fn handle_forwarding_soft_key(
         return;
     };
     let call_id = access.phone.reserve_call_id();
-    let entry = access.shared.forwarding_entries.lock_unpoisoned().begin(
-        device_id.clone(),
-        line_instance,
-        call_id,
-        kind,
-        dial_terminator,
-        timing,
-    );
+    let entry = access
+        .shared
+        .controller
+        .begin_forwarding_entry(
+            device_id.clone(),
+            line_instance,
+            call_id,
+            kind,
+            dial_terminator,
+            timing,
+        )
+        .unwrap_or(Err(ForwardingRejection::Conflict));
     let Ok(entry) = entry else {
         return;
     };
@@ -497,9 +518,9 @@ pub(super) async fn handle_forwarding_soft_key(
     .await;
     let begin_settled = access
         .shared
-        .forwarding_entries
-        .lock_unpoisoned()
-        .settle_collection_write(&device_id, entry.id, begin_outcome);
+        .controller
+        .settle_forwarding_collection(&device_id, entry.id, begin_outcome)
+        .unwrap_or(Err(ForwardingRejection::Conflict));
     if begin_settled != Ok(ForwardingWriteOutcome::Written) {
         if begin_outcome == ForwardingWriteOutcome::Written {
             let _ = send_confirmed_forwarding(
@@ -524,9 +545,9 @@ pub(super) async fn handle_forwarding_soft_key(
     .await;
     let prompt_settled = access
         .shared
-        .forwarding_entries
-        .lock_unpoisoned()
-        .settle_collection_write(&device_id, entry.id, prompt_outcome);
+        .controller
+        .settle_forwarding_collection(&device_id, entry.id, prompt_outcome)
+        .unwrap_or(Err(ForwardingRejection::Conflict));
     if prompt_settled != Ok(ForwardingWriteOutcome::Written) {
         let _ = send_confirmed_forwarding(
             access,
@@ -560,9 +581,9 @@ pub(super) fn forwarding_entry_exists(
 ) -> bool {
     access
         .shared
-        .forwarding_entries
-        .lock_unpoisoned()
-        .for_call(call_id)
+        .controller
+        .snapshot()
+        .forwarding_entry_for_call(call_id)
         .is_some_and(|entry| &entry.device_id == device_id)
 }
 
@@ -571,23 +592,11 @@ pub(super) fn cancel_forwarding_entry_for_call(
     device_id: &DeviceId,
     call_id: CallId,
 ) -> bool {
-    let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-    let Some(entry) = entries
-        .for_call(call_id)
-        .filter(|entry| &entry.device_id == device_id)
-        .cloned()
-    else {
-        return false;
-    };
-    entries.cancel_collection(device_id, entry.id).is_ok()
-}
-
-pub(super) fn cancel_forwarding_entry_for_device(access: &Access, device_id: &DeviceId) -> bool {
-    let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-    let Some(entry_id) = entries.get(device_id).map(|entry| entry.id) else {
-        return false;
-    };
-    entries.cancel(device_id, entry_id).is_ok()
+    access
+        .shared
+        .controller
+        .cancel_forwarding_for_call(device_id, call_id)
+        .unwrap_or(false)
 }
 
 pub(super) async fn handle_forwarding_digit(
@@ -596,15 +605,13 @@ pub(super) async fn handle_forwarding_digit(
     call_id: CallId,
     digit: Digit,
 ) -> bool {
-    let result = {
-        let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-        let Some(entry) = entries.for_call(call_id).cloned() else {
-            return false;
-        };
-        if &entry.device_id != device_id {
-            return true;
-        }
-        entries.input_digit(device_id, entry.id, digit, Instant::now())
+    let Some(result) = access
+        .shared
+        .controller
+        .input_forwarding_digit(device_id, call_id, digit, Instant::now())
+        .unwrap_or_default()
+    else {
+        return false;
     };
     match result {
         Ok(ForwardingDigitOutcome::Collected) => {}
@@ -629,15 +636,10 @@ pub(super) async fn handle_forwarding_digit(
 }
 
 pub(super) fn handle_forwarding_backspace(access: &Access, device_id: &DeviceId, call_id: CallId) {
-    let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-    let Some(entry) = entries
-        .for_call(call_id)
-        .filter(|entry| &entry.device_id == device_id)
-        .cloned()
-    else {
-        return;
-    };
-    let _ = entries.backspace(device_id, entry.id, Instant::now());
+    let _ = access
+        .shared
+        .controller
+        .backspace_forwarding(device_id, call_id, Instant::now());
 }
 
 pub(super) async fn replace_and_commit_forwarding_entry(
@@ -646,15 +648,13 @@ pub(super) async fn replace_and_commit_forwarding_entry(
     call_id: CallId,
     digits: &str,
 ) -> bool {
-    let result = {
-        let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-        let Some(entry) = entries.for_call(call_id).cloned() else {
-            return false;
-        };
-        if &entry.device_id != device_id {
-            return true;
-        }
-        entries.replace_digits(device_id, entry.id, digits, Instant::now())
+    let Some(result) = access
+        .shared
+        .controller
+        .replace_forwarding_digits(device_id, call_id, digits, Instant::now())
+        .unwrap_or_default()
+    else {
+        return false;
     };
     if result.is_err() {
         display_voicemail_prompt(
@@ -676,15 +676,13 @@ pub(super) async fn replace_forwarding_entry(
     call_id: CallId,
     digits: &str,
 ) -> bool {
-    let result = {
-        let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-        let Some(entry) = entries.for_call(call_id).cloned() else {
-            return false;
-        };
-        if &entry.device_id != device_id {
-            return true;
-        }
-        entries.replace_digits(device_id, entry.id, digits, Instant::now())
+    let Some(result) = access
+        .shared
+        .controller
+        .replace_forwarding_digits(device_id, call_id, digits, Instant::now())
+        .unwrap_or_default()
+    else {
+        return false;
     };
     if result.is_err() {
         display_voicemail_prompt(
@@ -703,16 +701,13 @@ pub(super) async fn commit_forwarding_entry(
     device_id: &DeviceId,
     call_id: CallId,
 ) {
-    let commit = {
-        let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-        let Some(entry) = entries
-            .for_call(call_id)
-            .filter(|entry| &entry.device_id == device_id)
-            .cloned()
-        else {
-            return;
-        };
-        entries.begin_commit(device_id, entry.id)
+    let Some(commit) = access
+        .shared
+        .controller
+        .begin_forwarding_commit(device_id, call_id)
+        .unwrap_or_default()
+    else {
+        return;
     };
     let Ok(commit) = commit else {
         display_voicemail_prompt(
@@ -737,9 +732,9 @@ pub(super) async fn finish_forwarding_commit(access: &Access, commit: Forwarding
     .await;
     if access
         .shared
-        .forwarding_entries
-        .lock_unpoisoned()
-        .settle_terminal_write(device_id, commit.entry_id, close_outcome)
+        .controller
+        .settle_forwarding_terminal(device_id, commit.entry_id, close_outcome)
+        .unwrap_or(Err(ForwardingRejection::Conflict))
         != Ok(ForwardingWriteOutcome::Written)
     {
         return;
@@ -758,14 +753,11 @@ pub(super) async fn finish_forwarding_commit(access: &Access, commit: Forwarding
                 Some(commit.destination.clone()),
             )
         });
-    {
-        let mut entries = access.shared.forwarding_entries.lock_unpoisoned();
-        if outcome.is_ok() {
-            let _ = entries.commit(device_id, commit.entry_id);
-        } else {
-            let _ = entries.cancel(device_id, commit.entry_id);
-        }
-    }
+    let _ = access.shared.controller.finish_forwarding_commit(
+        device_id,
+        commit.entry_id,
+        outcome.is_ok(),
+    );
 }
 
 pub(super) async fn handle_voicemail_soft_key(
@@ -777,20 +769,20 @@ pub(super) async fn handle_voicemail_soft_key(
 ) {
     let selected_call_id = match soft_key {
         SoftKey::ImmediateDivert => call_id,
-        SoftKey::TransferToVoicemail => controller_step(&access.shared.controller, |controller| {
-            let device = controller.registered_device(&device_id)?;
-            let selected = device.selected_calls().collect::<Vec<_>>();
-            (selected.len() == 1).then_some(selected[0])
-        }),
+        SoftKey::TransferToVoicemail => {
+            (|controller: &crate::runtime::controller::ControllerSnapshot| {
+                let device = controller.registered_device(&device_id)?;
+                let selected = device.selected_calls().collect::<Vec<_>>();
+                (selected.len() == 1).then_some(selected[0])
+            })(access.shared.controller.snapshot().as_ref())
+        }
         _ => None,
     };
     let Some(selected_call_id) = selected_call_id else {
         display_voicemail_prompt(access, device_id, call_id, "Select exactly one call").await;
         return;
     };
-    let call = controller_step(&access.shared.controller, |controller| {
-        controller.call(selected_call_id)
-    });
+    let call = access.shared.controller.snapshot().call(selected_call_id);
     let target = call.as_ref().and_then(|call| {
         let config = access.config();
         let binding = access.line_binding(&device_id, call.line_instance)?;
@@ -808,15 +800,19 @@ pub(super) async fn handle_voicemail_soft_key(
         .await;
         return;
     };
-    let plan = controller_step(&access.shared.controller, |controller| match soft_key {
-        SoftKey::ImmediateDivert => {
-            controller.begin_immediate_divert(&device_id, selected_call_id, target)
-        }
-        SoftKey::TransferToVoicemail => {
-            controller.begin_selected_voicemail_transfer(&device_id, target)
-        }
+    let plan = match soft_key {
+        SoftKey::ImmediateDivert => access
+            .shared
+            .controller
+            .begin_immediate_divert(&device_id, selected_call_id, target)
+            .unwrap_or(Err(crate::call::voicemail::VoicemailRejection::Conflict)),
+        SoftKey::TransferToVoicemail => access
+            .shared
+            .controller
+            .begin_selected_voicemail_transfer(&device_id, target)
+            .unwrap_or(Err(crate::call::voicemail::VoicemailRejection::Conflict)),
         _ => unreachable!("voicemail handler only receives voicemail soft keys"),
-    });
+    };
     let Ok(plan) = plan else {
         display_voicemail_prompt(
             access,
@@ -832,14 +828,15 @@ pub(super) async fn handle_voicemail_soft_key(
 
 pub(super) async fn execute_voicemail_plan(access: &Access, plan: VoicemailPlan) {
     let transaction = plan.transaction;
-    let (active, line) = controller_step(&access.shared.controller, |controller| {
+    let (active, line) = {
+        let controller = access.shared.controller.snapshot();
         (
             controller.voicemail_generation_is_active(&transaction.device_id, transaction.id),
             controller
                 .pbx_call(transaction.pbx_call_id)
                 .map(|call| call.line.clone()),
         )
-    });
+    };
     if !active {
         return;
     }
@@ -848,15 +845,19 @@ pub(super) async fn execute_voicemail_plan(access: &Access, plan: VoicemailPlan)
         _ => None,
     });
     let Some(operation) = operation else {
-        let _ = controller_step(&access.shared.controller, |controller| {
-            controller.abort_voicemail(&transaction.device_id, transaction.id)
-        });
+        let _ = access
+            .shared
+            .controller
+            .abort_voicemail(&transaction.device_id, transaction.id)
+            .unwrap_or_else(|_| Err(crate::call::voicemail::VoicemailRejection::Conflict));
         return;
     };
     if let Err(error) = AsteriskBackend::new(access).voicemail(&operation) {
-        let _ = controller_step(&access.shared.controller, |controller| {
-            controller.abort_voicemail(&transaction.device_id, transaction.id)
-        });
+        let _ = access
+            .shared
+            .controller
+            .abort_voicemail(&transaction.device_id, transaction.id)
+            .unwrap_or_else(|_| Err(crate::call::voicemail::VoicemailRejection::Conflict));
         ast_log(
             LogLevel::Warning,
             &format!(
@@ -873,13 +874,15 @@ pub(super) async fn execute_voicemail_plan(access: &Access, plan: VoicemailPlan)
         .await;
         return;
     }
-    let outcome = controller_step(&access.shared.controller, |controller| {
-        controller.complete_voicemail_native(
+    let outcome = access
+        .shared
+        .controller
+        .complete_voicemail_native(
             &transaction.device_id,
             transaction.id,
             transaction.pbx_call_id,
         )
-    });
+        .unwrap_or_else(|_| Err(crate::call::voicemail::VoicemailRejection::Conflict));
     let outcome = match outcome {
         Ok(VoicemailNativeOutcome::Committed(outcome)) => outcome,
         Ok(VoicemailNativeOutcome::CallAlreadyEnded) => return,
@@ -942,7 +945,7 @@ pub(super) async fn handle_recording_button(
     {
         return;
     }
-    let current_call = controller_step(&access.shared.controller, |controller| {
+    let current_call = (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let call_id = controller.registered_device(&device_id)?.active_call()?;
         let call = controller.call(call_id)?;
         (&call.device_id == &device_id
@@ -953,7 +956,7 @@ pub(super) async fn handle_recording_button(
                         | crate::runtime::controller::CallState::Barged
                 )))
         .then_some(call_id)
-    });
+    })(access.shared.controller.snapshot().as_ref());
     if let Some(call_id) = current_call {
         if let Err(error) = toggle_monitor_recording(access, recordings, &device_id, call_id).await
         {
@@ -977,10 +980,19 @@ pub(super) async fn handle_recording_button(
     }
 
     let result = {
-        let _feature_guard = access.shared.feature_mutations.lock_unpoisoned();
-        update_device_features_locked(access, &config, &device_id, |state| {
-            state.recording_armed = !state.recording_armed;
-        })
+        let Ok(transaction) = access.shared.configuration_transactions.begin(
+            ConfigurationOperation::Features,
+            Instant::now() + MANAGER_CONTROL_DELIVERY_TIMEOUT,
+        ) else {
+            return;
+        };
+        update_device_features(
+            access,
+            &config,
+            &device_id,
+            FeatureMutation::ToggleRecording,
+            &transaction,
+        )
     };
     match result {
         Ok(Some((_previous, _current))) => {
@@ -995,7 +1007,12 @@ pub(super) async fn handle_recording_button(
 }
 
 pub(super) fn handle_feature_button(access: &Access, device_id: DeviceId, instance: u32) {
-    let _feature_guard = access.shared.feature_mutations.lock_unpoisoned();
+    let Ok(transaction) = access.shared.configuration_transactions.begin(
+        ConfigurationOperation::Features,
+        Instant::now() + MANAGER_CONTROL_DELIVERY_TIMEOUT,
+    ) else {
+        return;
+    };
     let config = access.config();
     let configured = config.devices.get(&device_id).is_some_and(|device| {
         device.buttons.iter().any(|button| {
@@ -1011,11 +1028,13 @@ pub(super) fn handle_feature_button(access: &Access, device_id: DeviceId, instan
         return;
     }
 
-    match update_device_features_locked(access, &config, &device_id, |state| {
-        if let Some(enabled) = state.buttons.get_mut(&instance) {
-            *enabled = !*enabled;
-        }
-    }) {
+    match update_device_features(
+        access,
+        &config,
+        &device_id,
+        FeatureMutation::ToggleButton(instance),
+        &transaction,
+    ) {
         Ok(Some((previous, state))) => {
             publish_device_features(access, &device_id, &state);
             publish_feature_changes(access, &device_id, &previous, &state);
@@ -1029,9 +1048,12 @@ pub(super) fn handle_feature_button(access: &Access, device_id: DeviceId, instan
 }
 
 pub(super) fn publish_current_device_features(access: &Access, device_id: &DeviceId) {
-    let state = controller_step(&access.shared.controller, |controller| {
-        controller.feature_state(device_id).cloned()
-    });
+    let state = access
+        .shared
+        .controller
+        .snapshot()
+        .feature_state(device_id)
+        .cloned();
     if let Some(state) = state {
         publish_device_features(access, device_id, &state);
     }
@@ -1045,11 +1067,4 @@ pub fn log_feature_store_error(action: &str, device: Option<&DeviceId>, error: &
     };
     let subject = device.map_or_else(String::new, |device| format!(" for {device}"));
     ast_log(level, &format!("unable to {action}{subject}: {error}"));
-}
-
-pub(super) fn toggle_forwarding(
-    current: Option<ForwardingDestination>,
-    configured: Option<ForwardingDestination>,
-) -> Option<ForwardingDestination> {
-    if current.is_some() { None } else { configured }
 }

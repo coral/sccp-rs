@@ -298,7 +298,7 @@ impl fmt::Debug for ForwardingCommit {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ForwardingEntryRegistry {
     next_id: u64,
     by_device: HashMap<DeviceId, ForwardingEntry>,

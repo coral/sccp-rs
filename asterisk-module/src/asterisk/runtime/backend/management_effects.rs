@@ -7,7 +7,7 @@ impl ManagementBackend for AsteriskBackend<'_> {
         self.access
             .shared
             .ami_events
-            .publish(event)
+            .enqueue(event)
             .map(|_| ())
             .map_err(AsteriskBackendError::Management)
     }

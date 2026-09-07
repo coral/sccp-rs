@@ -184,31 +184,6 @@ impl Controller {
         Ok(effects)
     }
 
-    pub fn transfer_transaction(&self, call_id: CallId) -> Option<&TransferTransaction> {
-        let appearance = self.appearance_for_call(call_id)?;
-        self.transfers.for_leg(TransferLeg {
-            handset_call_id: call_id,
-            pbx_call_id: appearance.pbx_id,
-        })
-    }
-
-    pub fn transfer_transaction_for_device(
-        &self,
-        device_id: &DeviceId,
-    ) -> Option<&TransferTransaction> {
-        self.transfers.get(device_id)
-    }
-
-    pub fn transfer_generation_is_active(
-        &self,
-        device_id: &DeviceId,
-        transaction_id: TransferId,
-    ) -> bool {
-        self.transfers
-            .get(device_id)
-            .is_some_and(|transaction| transaction.id == transaction_id)
-    }
-
     pub fn transfer_setup_completed(
         &mut self,
         device_id: &DeviceId,

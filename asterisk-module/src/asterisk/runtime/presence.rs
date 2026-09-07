@@ -1,10 +1,26 @@
+use super::presence_owner::PresenceCommand;
 use super::{
-    Access, BTreeSet, BlfEvent, ButtonDefinition, CallState, DeviceId, DeviceState, DndMode,
-    HashMap, Instant, LineInstance, LogLevel, MutexExt as _, MwiSubscriptionChange, PhoneCommand,
-    PhoneCommandAction, ast_log, controller_step,
+    Access, BTreeSet, ButtonDefinition, CallState, DeviceId, DeviceState, DndMode, Instant,
 };
 
-use crate::asterisk::raw::presence::{NativeMwiSubscription, publish_device_state, subscribe_mwi};
+pub use super::presence_owner::{StagedMwiSubscriptions, StagedRegistrationContexts};
+
+pub fn publish_registration_contexts(
+    access: &Access,
+    config: std::sync::Arc<super::ModuleConfig>,
+    registered: Vec<DeviceId>,
+    device: DeviceId,
+    lease: &crate::runtime::configuration_transaction::ConfigurationLease,
+) -> Result<(), crate::pbx::registration::RegistrationRegistryError> {
+    access
+        .shared
+        .presence
+        .register_contexts(config, registered, device, lease)
+}
+
+pub fn retire_registration_contexts(access: &Access) {
+    access.shared.presence.retire_registration_contexts();
+}
 
 pub fn publish_device_lines(access: &Access, device: &DeviceId) {
     let config = access.config();
@@ -19,8 +35,9 @@ pub fn publish_device_lines(access: &Access, device: &DeviceId) {
     lines.extend(
         access
             .shared
-            .mobility
-            .lock_unpoisoned()
+            .controller
+            .snapshot()
+            .mobility()
             .appearances_for_device(device)
             .map(|appearance| appearance.binding.line.number.clone()),
     );
@@ -30,176 +47,78 @@ pub fn publish_device_lines(access: &Access, device: &DeviceId) {
 }
 
 pub fn publish_line(access: &Access, line: &str) {
-    let state = device_state(access, line);
-    let mut published = access.shared.published_line_states.lock_unpoisoned();
-    let changed = match published.get_mut(line) {
-        Some(previous) if *previous == state => false,
-        Some(previous) => {
-            *previous = state;
-            true
-        }
-        None => {
-            published.insert(line.to_owned(), state);
-            true
-        }
-    };
-    drop(published);
-    if !changed {
-        return;
-    }
-    publish_device_state(line, state);
+    access
+        .shared
+        .presence
+        .enqueue(PresenceCommand::PublishLine {
+            line: line.to_owned(),
+            state: device_state(access, line),
+        });
 }
 
 pub fn install_blf(access: &Access, device_id: &DeviceId) {
     let config = access.config();
     let Some(device) = config.devices.get(device_id) else {
-        access
-            .shared
-            .blf_subscriptions
-            .lock_unpoisoned()
-            .remove_device(device_id);
+        uninstall_device_blf(access, device_id);
         return;
     };
-    let mut subscriptions = access.shared.blf_subscriptions.lock_unpoisoned();
-    subscriptions.remove_device(device_id);
-    for definition in &device.buttons {
-        let ButtonDefinition::BlfSpeedDial(definition) = definition else {
-            continue;
-        };
-        let Some(target) = device.blf_targets.get(&definition.instance) else {
-            ast_log(
-                LogLevel::Warning,
-                &format!(
-                    "unable to subscribe BLF button {} for {device_id}: no normalized hint target",
-                    definition.instance
-                ),
-            );
-            continue;
-        };
-        if let Err(error) = subscriptions.subscribe(device_id.clone(), definition, target) {
-            ast_log(
-                LogLevel::Warning,
-                &format!(
-                    "unable to subscribe BLF button {} for {device_id}: {error}",
-                    definition.instance
-                ),
-            );
-        }
-    }
-}
-
-pub fn handle_blf_event(access: &Access, event: BlfEvent) {
-    let mut subscriptions = access.shared.blf_subscriptions.lock_unpoisoned();
-    if !subscriptions.is_current(&event) {
+    let Some(generation) = access
+        .shared
+        .controller
+        .snapshot()
+        .registered_device(device_id)
+        .map(|device| device.session_generation)
+    else {
         return;
-    }
-    subscriptions.retry_terminal(&event);
-    drop(subscriptions);
-    access.spawn_phone(PhoneCommand::new(
-        event.device_id,
-        PhoneCommandAction::SetBlfStatus {
-            instance: LineInstance::new(event.instance),
-            state: event.state,
-            caller: event.caller,
-        },
-    ));
+    };
+    let plan = device
+        .buttons
+        .iter()
+        .filter_map(|button| {
+            let ButtonDefinition::BlfSpeedDial(definition) = button else {
+                return None;
+            };
+            device
+                .blf_targets
+                .get(&definition.instance)
+                .map(|target| (definition.clone(), target.clone()))
+        })
+        .collect();
+    access.shared.presence.enqueue(PresenceCommand::InstallBlf {
+        device: device_id.clone(),
+        generation,
+        plan,
+    });
 }
 
-/// Retries only subscriptions whose previous installation failed or whose
-/// Asterisk hint was removed/deactivated. Backoff ownership lives in the
-/// subscription registry, so this inexpensive scan is safe on the runtime
-/// deadline tick.
 pub fn retry_blf(access: &Access, now: Instant) {
-    let config = access.config();
-    let registered = controller_step(&access.shared.controller, |controller| {
-        config
-            .devices
-            .keys()
-            .filter(|device| controller.is_registered(device))
-            .cloned()
-            .collect::<Vec<_>>()
-    });
-    let mut subscriptions = access.shared.blf_subscriptions.lock_unpoisoned();
-    for device_id in registered {
-        let Some(device) = config.devices.get(&device_id) else {
-            continue;
-        };
-        for button in &device.buttons {
-            let ButtonDefinition::BlfSpeedDial(definition) = button else {
-                continue;
-            };
-            if !subscriptions.retry_due(&device_id, definition.instance, now) {
-                continue;
-            }
-            let Some(target) = device.blf_targets.get(&definition.instance) else {
-                continue;
-            };
-            if let Err(error) = subscriptions.subscribe(device_id.clone(), definition, target) {
-                ast_log(
-                    LogLevel::Warning,
-                    &format!(
-                        "unable to retry BLF button {} for {device_id}: {error}",
-                        definition.instance
-                    ),
-                );
-            }
-        }
-    }
+    access
+        .shared
+        .presence
+        .enqueue(PresenceCommand::RetryBlf(now));
 }
 
 pub fn uninstall_device_blf(access: &Access, device_id: &DeviceId) {
-    access
-        .shared
-        .blf_subscriptions
-        .lock_unpoisoned()
-        .remove_device(device_id);
+    access.shared.presence.enqueue(PresenceCommand::RemoveBlf {
+        device: device_id.clone(),
+        generation: None,
+    });
 }
 
-pub fn uninstall_blf(access: &Access) {
-    access.shared.blf_subscriptions.lock_unpoisoned().clear();
-}
-
-pub struct StagedMwiSubscriptions {
-    pub subscriptions: HashMap<String, NativeMwiSubscription>,
-}
-
-impl StagedMwiSubscriptions {
-    pub fn new(changes: &[MwiSubscriptionChange]) -> Result<Self, String> {
-        let mut staged = Self {
-            subscriptions: HashMap::new(),
-        };
-        for change in changes {
-            let subscription =
-                subscribe_mwi(change.line.clone(), change.mailbox.clone()).map_err(|error| {
-                    format!(
-                        "unable to stage MWI subscription for line {}: {error}",
-                        change.line
-                    )
-                })?;
-            staged
-                .subscriptions
-                .insert(change.line.clone(), subscription);
-        }
-        Ok(staged)
-    }
-
-    pub fn commit(mut self, access: &Access, removed: &[MwiSubscriptionChange]) {
-        let old = {
-            let mut live = access.shared.mwi_subscriptions.lock_unpoisoned();
-            let old = removed
-                .iter()
-                .filter_map(|change| live.remove(&change.line))
-                .collect::<Vec<_>>();
-            live.extend(self.subscriptions.drain());
-            old
-        };
-        drop(old);
-    }
+pub fn uninstall_device_blf_for_session(
+    access: &Access,
+    device_id: &DeviceId,
+    generation: sccp_protocol::SessionGeneration,
+) {
+    access.shared.presence.enqueue(PresenceCommand::RemoveBlf {
+        device: device_id.clone(),
+        generation: Some(generation),
+    });
 }
 
 pub fn install_mwi(access: &Access) {
-    let config = access.config();
-    let subscriptions: Vec<_> = config
+    let subscriptions = access
+        .config()
         .lines
         .values()
         .filter_map(|line| {
@@ -208,27 +127,14 @@ pub fn install_mwi(access: &Access) {
                 .map(|mailbox| (line.number.clone(), mailbox.clone()))
         })
         .collect();
-    let mut installed = HashMap::new();
-    for (line, mailbox) in subscriptions {
-        match subscribe_mwi(line.clone(), mailbox.clone()) {
-            Ok(subscription) => {
-                installed.insert(line, subscription);
-            }
-            Err(error) => {
-                ast_log(
-                    LogLevel::Warning,
-                    &format!("unable to subscribe to mailbox {mailbox} for SCCP/{line}: {error}"),
-                );
-            }
-        }
-    }
-    *access.shared.mwi_subscriptions.lock_unpoisoned() = installed;
+    access
+        .shared
+        .presence
+        .enqueue(PresenceCommand::InstallMwi(subscriptions));
 }
 
 pub fn uninstall_mwi(access: &Access) {
-    drop(std::mem::take(
-        &mut *access.shared.mwi_subscriptions.lock_unpoisoned(),
-    ));
+    access.shared.presence.enqueue(PresenceCommand::ClearMwi);
 }
 
 pub fn device_state(access: &Access, line: &str) -> DeviceState {
@@ -240,12 +146,14 @@ pub fn device_state(access: &Access, line: &str) -> DeviceState {
     appearances.extend(
         access
             .shared
-            .mobility
-            .lock_unpoisoned()
+            .controller
+            .snapshot()
+            .mobility()
             .appearances_for_line(line)
             .map(|appearance| appearance.binding.device_id.clone()),
     );
-    let (registered_dnd, states) = controller_step(&access.shared.controller, |controller| {
+    let (registered_dnd, states) = {
+        let controller = access.shared.controller.snapshot();
         let registered_dnd = appearances
             .iter()
             .filter(|device| controller.is_registered(device))
@@ -261,7 +169,7 @@ pub fn device_state(access: &Access, line: &str) -> DeviceState {
             .map(|call| call.state)
             .collect::<Vec<_>>();
         (registered_dnd, states)
-    });
+    };
     aggregate_device_state(!appearances.is_empty(), &registered_dnd, &states)
 }
 

@@ -1,14 +1,13 @@
 //! Handset-facing translation of exhaustive backend effects.
 
 use super::{
-    Access, CallDirection, CallId, CallInfo, ConferenceId, DeviceId, HandsetEffect, IpAddr,
-    IpAddressType, Ipv4Addr, LineInstance, MANAGER_CONTROL_DELIVERY_TIMEOUT, MediaEndpointAddress,
+    Access, CallId, ConferenceId, DeviceId, HandsetEffect, IpAddr, IpAddressType, Ipv4Addr,
+    LineInstance, MANAGER_CONTROL_DELIVERY_TIMEOUT, MediaEndpointAddress,
     MultimediaReceiveDescriptor, MultimediaTransmitControl, MultimediaTransmitDescriptor,
     PhoneCallState, PhoneCommand, PhoneCommandAction, ProtocolVersion, ReceiveChannelPurpose,
     SessionGeneration, VideoPlan, audio_framing, begin_answer_media, begin_handset_media,
     begin_outbound_media, call_event, configured_audio_processing, configured_audio_traffic_class,
-    configured_dtmf_mode, configured_video_traffic_class, controller_step, publish_ami_event,
-    receive_media_source,
+    configured_dtmf_mode, configured_video_traffic_class, publish_ami_event, receive_media_source,
 };
 
 pub async fn send_handset_call_state(
@@ -17,9 +16,12 @@ pub async fn send_handset_call_state(
     call_id: CallId,
     state: PhoneCallState,
 ) -> Result<(), String> {
-    let privacy = controller_step(&access.shared.controller, |controller| {
-        controller.call_privacy(call_id).unwrap_or(true)
-    });
+    let privacy = access
+        .shared
+        .controller
+        .snapshot()
+        .call_privacy(call_id)
+        .unwrap_or(true);
     access
         .phone
         .send_confirmed(PhoneCommand::new(
@@ -45,14 +47,15 @@ fn video_plan_for_effect(
     call_id: CallId,
     direction: VideoEffectDirection,
 ) -> Result<VideoPlan, String> {
-    controller_step(&access.shared.controller, |controller| match direction {
+    let controller = access.shared.controller.snapshot();
+    match direction {
         VideoEffectDirection::Receive => controller
             .opening_video_receive_plan_for_device(device_id, session_generation, call_id)
             .cloned(),
         VideoEffectDirection::Transmit => controller
             .opening_video_transmit_plan_for_device(device_id, session_generation, call_id)
             .cloned(),
-    })
+    }
     .ok_or_else(|| format!("call {call_id:?} has no current video plan for {device_id}"))
 }
 
@@ -313,14 +316,17 @@ pub async fn execute_handset_effect(access: &Access, effect: HandsetEffect) -> R
             session_generation,
             passthrough_party_id,
         } => {
-            if !controller_step(&access.shared.controller, |controller| {
-                controller.video_refresh_is_current(
+            if !access
+                .shared
+                .controller
+                .snapshot()
+                .video_refresh_is_current(
                     &device_id,
                     session_generation,
                     call_id,
                     passthrough_party_id,
                 )
-            }) {
+            {
                 return Ok(());
             }
             access
@@ -344,9 +350,12 @@ pub async fn execute_handset_effect(access: &Access, effect: HandsetEffect) -> R
             call_id,
             session_generation,
         } => {
-            if !controller_step(&access.shared.controller, |controller| {
-                controller.session_is_current(&device_id, session_generation)
-            }) {
+            if !access
+                .shared
+                .controller
+                .snapshot()
+                .session_is_current(&device_id, session_generation)
+            {
                 return Ok(());
             }
             let close = access
@@ -402,21 +411,11 @@ pub async fn execute_handset_effect(access: &Access, effect: HandsetEffect) -> R
             answer,
             parties,
         } => {
-            let info = controller_step(&access.shared.controller, |controller| {
-                let mut info = controller.call_info(call_id).cloned().unwrap_or(CallInfo {
-                    direction: CallDirection::Inbound,
-                    ..CallInfo::default()
-                });
-                info.direction = CallDirection::Inbound;
-                info.calling_name = parties.calling_name;
-                info.calling_number = parties.calling_number;
-                info.called_name = parties.connected_name;
-                info.called_number = parties.connected_number;
-                info.last_redirecting_name = parties.redirecting_name;
-                info.last_redirecting_number = parties.redirecting_number;
-                let _ = controller.set_call_info(call_id, info.clone());
-                info
-            });
+            let info = access
+                .shared
+                .controller
+                .apply_pickup_identity(call_id, parties)
+                .map_err(|error| error.to_string())?;
             access
                 .phone
                 .send_confirmed(PhoneCommand::new(
@@ -551,9 +550,12 @@ pub async fn execute_handset_effect(access: &Access, effect: HandsetEffect) -> R
                 }
             }
             if state == PhoneCallState::Connected
-                && let Some(info) = controller_step(&access.shared.controller, |controller| {
-                    controller.call_info(call_id).cloned()
-                })
+                && let Some(info) = access
+                    .shared
+                    .controller
+                    .snapshot()
+                    .call_info(call_id)
+                    .cloned()
                 && let Err(error) = access
                     .phone
                     .send_confirmed(PhoneCommand::new(

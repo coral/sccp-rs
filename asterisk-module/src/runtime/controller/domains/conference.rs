@@ -426,63 +426,6 @@ impl Controller {
         Ok(effects)
     }
 
-    pub fn confirm_conference_invite(
-        &self,
-        invite_call_id: CallId,
-    ) -> Result<Vec<DriverEffect>, ConferenceRejection> {
-        let session = self
-            .conference_session(invite_call_id)
-            .ok_or(ConferenceRejection::Unavailable)?;
-        let invite = session
-            .pending_invite
-            .as_ref()
-            .filter(|invite| invite.participant.handset_call_id == invite_call_id)
-            .ok_or(ConferenceRejection::Conflict)?;
-        let moderator = session
-            .participants
-            .get(invite.moderator_id)
-            .filter(|moderator| {
-                moderator.moderator && moderator.pbx_call_id == invite.moderator_call_id
-            })
-            .ok_or(ConferenceRejection::Unavailable)?;
-        if self
-            .call_registry
-            .pbx
-            .get(&invite.participant.pbx_call_id)
-            .is_none_or(|call| call.state != CallState::Connected)
-            || self
-                .call_registry
-                .pbx
-                .get(&moderator.pbx_call_id)
-                .is_none_or(|call| call.state != CallState::Held)
-        {
-            return Err(ConferenceRejection::NotConnected);
-        }
-        let mut effects = if invite.music_started {
-            Self::conference_music_effects(session, false)
-        } else {
-            Vec::new()
-        };
-        effects.extend([
-            PbxEffect::Resume {
-                call_id: moderator.pbx_call_id,
-            }
-            .into(),
-            PbxEffect::Bridge {
-                operation: crate::runtime::backend::BridgeOperation::MergeParticipant {
-                    bridge_id: session.bridge_id,
-                    call_id: invite.participant.pbx_call_id,
-                },
-            }
-            .into(),
-        ]);
-        effects.extend(Self::conference_mute_on_entry_effects(
-            session,
-            std::iter::once(&invite.participant),
-        ));
-        Ok(effects)
-    }
-
     pub fn conference_invite_merged(&mut self, invite_call_id: CallId) -> bool {
         let Some(key) = self
             .conference_session(invite_call_id)
@@ -756,26 +699,6 @@ impl Controller {
         Ok(effects)
     }
 
-    pub fn conference_session(&self, call_id: CallId) -> Option<&ConferenceSession> {
-        let pbx_id = self.appearance_for_call(call_id)?.pbx_id;
-        self.conference_session_by_pbx(pbx_id)
-    }
-
-    pub fn conference_session_by_pbx(&self, pbx_id: PbxCallId) -> Option<&ConferenceSession> {
-        let consultation = self.conferences.by_pbx.get(&pbx_id)?;
-        self.conferences.by_consultation.get(consultation)
-    }
-
-    pub fn conference_session_by_id(
-        &self,
-        conference_id: ConferenceId,
-    ) -> Option<&ConferenceSession> {
-        self.conferences
-            .by_consultation
-            .values()
-            .find(|session| session.id == conference_id)
-    }
-
     #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn claim_conference_mutation(
         &mut self,
@@ -792,21 +715,6 @@ impl Controller {
     ) -> Option<ConferenceMutationToken> {
         self.conference_session_by_id(conference_id)?;
         self.allocate_conference_mutation(ConferenceMutationOwner::Session(conference_id))
-    }
-
-    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-    pub(crate) fn conference_mutation_is_active(&self, token: ConferenceMutationToken) -> bool {
-        if self.conference_mutations.get(&token.owner) != Some(&token.generation) {
-            return false;
-        }
-        match token.owner {
-            ConferenceMutationOwner::Session(conference_id) => {
-                self.conference_session_by_id(conference_id).is_some()
-            }
-            ConferenceMutationOwner::Destination(call_id) => {
-                self.call_registry.pbx.contains_key(&call_id)
-            }
-        }
     }
 
     #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
@@ -865,19 +773,6 @@ impl Controller {
         }
         session.media_policy = policy;
         true
-    }
-
-    /// Build one typed PBX announcement from committed conference state.
-    /// Callers invoke this only after the associated bridge mutation succeeds.
-    pub fn conference_announcement_effects(
-        &self,
-        conference_id: ConferenceId,
-        announcement: ConferenceAnnouncement,
-    ) -> Vec<DriverEffect> {
-        let Some(session) = self.conference_session_by_id(conference_id) else {
-            return Vec::new();
-        };
-        Self::conference_announcement_effects_for_session(session, announcement)
     }
 
     pub(in crate::runtime::controller) fn conference_announcement_effects_for_session(

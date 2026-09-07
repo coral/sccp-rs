@@ -11,13 +11,12 @@ use super::runtime::{
     device_state, direct_media_call, direct_media_policy, enqueue_media_retarget,
     execute_answer_call_transition, execute_background_cli as execute_runtime_background_cli,
     execute_dnd_schedule_cli as execute_runtime_dnd_schedule_cli, execute_forwarding_mutation,
-    format_for, handle_runtime_hangup_signal, install_mwi, local_media_endpoint, module_access,
-    preferred_codec_upgrade, preferred_inbound_codec, prepare_channel_allocation_text,
-    publish_line, queue_unavailable, read_channel_metadata, read_party_snapshot,
-    registered_device_ids, reload, reload_selected, reload_sorcery, remove_channel,
-    render_runtime_cli_diagnostics, render_runtime_cli_inventory, requestor_auto_answer_mode,
-    retarget_station_to_anchor, state_from_channel, station_nat_active, take_state_from_channel,
-    uninstall_mwi, with_channel,
+    format_for, install_mwi, local_media_endpoint, module_access, preferred_codec_upgrade,
+    preferred_inbound_codec, prepare_channel_allocation_text, publish_line, queue_unavailable,
+    read_channel_metadata, read_party_snapshot, registered_device_ids, reload, reload_selected,
+    reload_sorcery, remove_channel, render_runtime_cli_diagnostics, render_runtime_cli_inventory,
+    requestor_auto_answer_mode, retarget_station_to_anchor, state_from_channel, station_nat_active,
+    take_state_from_channel, uninstall_mwi, with_channel,
 };
 use super::{
     AppearanceRingMode, Arc, AsteriskRealtime, AsteriskSorcerySource, AutoAnswerPolicy, CStr,
@@ -36,8 +35,8 @@ use super::{
     ReloadSelection, ResetMode, ResetTarget, RingDuration, RingerMode, SharedNoAnswerRoute,
     SorceryConfigurationProvider, StationSessionTarget, Tone, USER_BUSY, c_int,
     canonical_ip_address, complete_cli_device, complete_cli_reset_target, complete_cli_value,
-    compose_channel_metadata, controller_step, execute_cli_answer, execute_cli_device_control,
-    execute_cli_dnd, execute_cli_end, execute_cli_message, execute_cli_originate, native_channel,
+    compose_channel_metadata, execute_cli_answer, execute_cli_device_control, execute_cli_dnd,
+    execute_cli_end, execute_cli_message, execute_cli_originate, native_channel,
     parse_cli_forwarding_mutation, pbx_audio_format, pbx_audio_formats_from_mask,
     pbx_video_formats_from_mask, plan_inbound_bindings, plan_shared_no_answer_route, raw, sys,
 };
@@ -85,9 +84,11 @@ async fn reconcile_incoming_offer(
 ) {
     match receipt.wait().await {
         Ok(IncomingOfferDelivery::Presented) => {
-            let effects = controller_step(&access.shared.controller, |controller| {
-                controller.start_call_waiting_tone(call_id, tone, tone_interval, Instant::now())
-            });
+            let effects = access
+                .shared
+                .controller
+                .start_call_waiting_tone(call_id, tone, tone_interval, Instant::now())
+                .unwrap_or_else(|_| Vec::new());
             for effect in effects {
                 let DriverEffect::Handset(HandsetEffect::StartTone {
                     device_id,
@@ -102,9 +103,11 @@ async fn reconcile_incoming_offer(
                     device_id,
                     PhoneCommandAction::StartTone { call_id, tone },
                 )) {
-                    controller_step(&access.shared.controller, |controller| {
-                        controller.cancel_call_waiting_tone(call_id)
-                    });
+                    access
+                        .shared
+                        .controller
+                        .cancel_call_waiting_tone(call_id)
+                        .unwrap_or_else(|_| false);
                     ast_log(
                         LogLevel::Warning,
                         &format!("unable to enqueue SCCP call-waiting tone: {error}"),
@@ -113,16 +116,12 @@ async fn reconcile_incoming_offer(
             }
         }
         delivery => {
-            let removed_all = controller_step(&access.shared.controller, |controller| {
-                let removed = controller.cancel_inbound_offer(call_id);
-                controller.cancel_call_waiting_tone(call_id);
-                removed && controller.pbx_call(pbx_id).is_none()
-            });
-            if !removed_all
-                && controller_step(&access.shared.controller, |controller| {
-                    controller.call(call_id).is_some()
-                })
-            {
+            let removed_all = access
+                .shared
+                .controller
+                .cancel_failed_inbound_offer(call_id, pbx_id)
+                .unwrap_or_else(|_| false);
+            if !removed_all && access.shared.controller.snapshot().call(call_id).is_some() {
                 return;
             }
             ast_log(
@@ -235,9 +234,12 @@ impl Drop for PreparedChannelRequest<'_> {
             return;
         }
         remove_channel(self.access, self.pbx_id);
-        let _ = controller_step(&self.access.shared.controller, |controller| {
-            controller.pbx_hangup_with_effects(self.pbx_id)
-        });
+        let _ = self
+            .access
+            .shared
+            .controller
+            .pbx_hangup_with_effects(self.pbx_id)
+            .unwrap_or_else(|_| None);
     }
 }
 
@@ -500,6 +502,24 @@ pub fn stop_module() -> Result<(), ModuleLifecycleError> {
     Ok(())
 }
 
+/// Close native channel creation before unregistering the driver. A concurrent
+/// allocation either makes unload fail promptly or becomes visible to the final
+/// active-channel check. Do not wait for it under Asterisk's loader locks.
+/// Refused unload restores admission without disturbing live calls.
+pub fn prepare_module_unload() -> Result<(), ModuleLifecycleError> {
+    let Some(access) = module_access() else {
+        return Ok(());
+    };
+    if !access.shared.channel_allocations.try_suspend() {
+        return Err(ModuleLifecycleError);
+    }
+    if !access.shared.channels.lock_unpoisoned().is_empty() {
+        access.shared.channel_allocations.resume();
+        return Err(ModuleLifecycleError);
+    }
+    Ok(())
+}
+
 pub fn has_active_channels() -> bool {
     module_access().is_some_and(|access| !access.shared.channels.lock_unpoisoned().is_empty())
 }
@@ -549,12 +569,13 @@ pub unsafe fn request_channel(
         native_channel::video_capability_mask(Some(request_capabilities)).bits()
     });
     let config = access.config();
-    let registered = controller_step(&access.shared.controller, |controller| {
-        controller
-            .registered_devices()
-            .map(|(device_id, _)| device_id.clone())
-            .collect::<Vec<_>>()
-    });
+    let registered = access
+        .shared
+        .controller
+        .snapshot()
+        .registered_devices()
+        .map(|(device_id, _)| device_id.clone())
+        .collect::<Vec<_>>();
     let bindings = access.inbound_line_bindings(dial_request.target());
     let ring_enabled = bindings
         .iter()
@@ -639,9 +660,15 @@ pub unsafe fn request_channel(
             }
         })?;
     let mut prepared = PreparedChannelRequest::new(&access, pbx_id);
-    let disposition = controller_step(&access.shared.controller, |controller| {
-        controller.offer_inbound_call_with_policy(pbx_id, candidates.clone())
-    });
+    let disposition = access
+        .shared
+        .controller
+        .offer_inbound_call_with_policy(pbx_id, candidates.clone())
+        .unwrap_or_else(|_| {
+            crate::runtime::controller::InboundCallDisposition::Unavailable(
+                crate::runtime::controller::InboundUnavailableReason::Conflict,
+            )
+        });
     let selected = match disposition {
         InboundCallDisposition::Offer(offers) => {
             let Some(primary_offer) = offers.first() else {
@@ -657,7 +684,8 @@ pub unsafe fn request_channel(
                     cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
                 });
             };
-            let no_answer_destinations = controller_step(&access.shared.controller, |controller| {
+            let no_answer_destinations = {
+                let controller = access.shared.controller.snapshot();
                 offers
                     .iter()
                     .map(|offer| {
@@ -669,7 +697,7 @@ pub unsafe fn request_channel(
                         )
                     })
                     .collect::<HashMap<_, _>>()
-            });
+            };
             let no_answer = plan_shared_no_answer_route(offers.iter().filter_map(|offer| {
                 let binding = access.line_binding(&offer.device_id, offer.line_instance)?;
                 let device = config.devices.get(&offer.device_id)?;
@@ -708,15 +736,18 @@ pub unsafe fn request_channel(
                     cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
                 });
             };
-            access.shared.forwarded_calls.lock_unpoisoned().insert(
-                pbx_id,
-                ForwardingOperation {
+            access
+                .shared
+                .controller
+                .register_forwarded_call(ForwardingOperation {
                     call_id: pbx_id,
                     context,
                     destination,
                     reason,
-                },
-            );
+                })
+                .map_err(|_| ChannelRequestError {
+                    cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
+                })?;
             SelectedChannelPolicy {
                 primary_call_id: primary.call_id,
                 primary_binding: *binding,
@@ -749,9 +780,11 @@ pub unsafe fn request_channel(
         })?;
     if !forwarded
         && let Some(request) = dial_request.auto_answer()
-        && !controller_step(&access.shared.controller, |controller| {
-            controller.set_auto_answer_request(pbx_id, request)
-        })
+        && !access
+            .shared
+            .controller
+            .set_auto_answer_request(pbx_id, request)
+            .unwrap_or_else(|_| false)
     {
         return Err(ChannelRequestError {
             cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
@@ -778,9 +811,11 @@ pub unsafe fn request_channel(
     };
     if !forwarded
         && !matches!(
-            controller_step(&access.shared.controller, |controller| {
-                controller.set_call_metadata(pbx_id, metadata.clone())
-            }),
+            access
+                .shared
+                .controller
+                .set_call_metadata(pbx_id, metadata.clone())
+                .unwrap_or_else(|_| Ok(false)),
             Ok(true)
         )
     {
@@ -791,11 +826,11 @@ pub unsafe fn request_channel(
     if !forwarded && let Some(snapshot) = requestor_party.as_ref() {
         // These appearances have not been offered yet; store the
         // typed seed and let `place_call` perform the first send.
-        let _ = controller_step(&access.shared.controller, |controller| {
-            controller.update_call_info_by_pbx(pbx_id, |current| {
-                snapshot.apply_initial_inbound_to_call_info(current)
-            })
-        });
+        let _ = access
+            .shared
+            .controller
+            .seed_inbound_identity(pbx_id, snapshot.clone())
+            .unwrap_or_else(|_| Vec::new());
     }
     let directly_requested = pbx_audio_format(primary_codec)
         .ok()
@@ -816,9 +851,11 @@ pub unsafe fn request_channel(
     if let Some(route) = no_answer {
         access
             .shared
-            .no_answer_plans
-            .lock_unpoisoned()
-            .insert(pbx_id, route);
+            .controller
+            .set_no_answer_plan(pbx_id, route)
+            .map_err(|_| ChannelRequestError {
+                cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
+            })?;
     }
     if allocate_channel(
         &access,
@@ -841,9 +878,11 @@ pub unsafe fn request_channel(
     }
     access
         .shared
-        .audio_packet_ms
-        .lock_unpoisoned()
-        .insert(pbx_id, packet_ms);
+        .controller
+        .set_audio_packet_ms(pbx_id, packet_ms)
+        .map_err(|_| ChannelRequestError {
+            cause: Some(REQUESTED_CHANNEL_UNAVAILABLE),
+        })?;
     let cause = dial_request
         .auto_answer()
         .and_then(|request| request.unavailable_cause)
@@ -871,10 +910,10 @@ pub unsafe fn place_call(
     let config = access.config();
     let forwarded = access
         .shared
-        .forwarded_calls
-        .lock_unpoisoned()
-        .get(&state.pbx_id)
-        .cloned();
+        .controller
+        .snapshot()
+        .call_runtime_record(state.pbx_id)
+        .and_then(|record| record.forwarding.clone());
     if let Some(route) = forwarded {
         return match AsteriskBackend::new(&access).forward(&route) {
             Ok(()) => Ok(()),
@@ -889,10 +928,10 @@ pub unsafe fn place_call(
     }
     let no_answer_plan = access
         .shared
-        .no_answer_plans
-        .lock_unpoisoned()
-        .remove(&state.pbx_id);
-    let Some((line, offers)) = controller_step(&access.shared.controller, |controller| {
+        .controller
+        .take_no_answer_plan(state.pbx_id)
+        .unwrap_or_default();
+    let Some((line, offers)) = (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let call = controller.pbx_call(state.pbx_id)?;
         let offers = controller
             .inbound_offers_for_pbx(state.pbx_id)
@@ -905,7 +944,7 @@ pub unsafe fn place_call(
             })
             .collect::<Vec<_>>();
         Some((call.line.clone(), offers))
-    }) else {
+    })(access.shared.controller.snapshot().as_ref()) else {
         return Err(ChannelOperationError::Invalid);
     };
     if offers.is_empty() {
@@ -914,9 +953,13 @@ pub unsafe fn place_call(
     let mut offered = 0;
     let mut enqueued = Vec::with_capacity(offers.len());
     for (offer, session_generation) in offers {
-        let Some(info) = controller_step(&access.shared.controller, |controller| {
-            controller.call_info(offer.call_id).cloned()
-        }) else {
+        let Some(info) = access
+            .shared
+            .controller
+            .snapshot()
+            .call_info(offer.call_id)
+            .cloned()
+        else {
             continue;
         };
         let ringer = match offer.ring_mode {
@@ -938,6 +981,14 @@ pub unsafe fn place_call(
                 continue;
             }
         };
+        let Ok(reconciliation) = access.shared.workers.try_reserve() else {
+            access
+                .shared
+                .controller
+                .cancel_inbound_offer(offer.call_id)
+                .unwrap_or_else(|_| false);
+            continue;
+        };
         match access.phone.try_offer_incoming_call_for_session(
             StationSessionTarget::new(offer.device_id.clone(), session_generation),
             LineInstance::new(offer.line_instance),
@@ -956,7 +1007,7 @@ pub unsafe fn place_call(
                 let tone = config.general.call_waiting_tone;
                 let tone_interval =
                     Duration::from_secs(config.general.call_waiting_interval_seconds.into());
-                access.handle.spawn(async move {
+                reconciliation.spawn(async move {
                     reconcile_incoming_offer(
                         reconcile,
                         pbx_id,
@@ -970,9 +1021,11 @@ pub unsafe fn place_call(
                 });
             }
             Err(error) => {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.cancel_inbound_offer(offer.call_id)
-                });
+                access
+                    .shared
+                    .controller
+                    .cancel_inbound_offer(offer.call_id)
+                    .unwrap_or_else(|_| false);
                 ast_log(
                     LogLevel::Warning,
                     &format!("unable to enqueue SCCP incoming call: {error}"),
@@ -986,9 +1039,11 @@ pub unsafe fn place_call(
     }
     if unsafe { native_channel::start_ringing(channel) }.is_err() {
         for (device_id, call_id) in enqueued {
-            controller_step(&access.shared.controller, |controller| {
-                controller.cancel_inbound_offer(call_id)
-            });
+            access
+                .shared
+                .controller
+                .cancel_inbound_offer(call_id)
+                .unwrap_or_else(|_| false);
             if let Err(error) = access.phone.try_send(PhoneCommand::new(
                 device_id,
                 PhoneCommandAction::CloseCall { call_id },
@@ -1005,7 +1060,7 @@ pub unsafe fn place_call(
     publish_line(&access, &line);
     if let Some(route) = no_answer_plan {
         let deadline = Instant::now() + route.timeout;
-        if let Err(error) = access.shared.no_answer_timers.lock_unpoisoned().schedule(
+        if let Err(error) = access.shared.controller.schedule_no_answer_timer(
             state.pbx_id,
             deadline,
             route.context,
@@ -1022,24 +1077,24 @@ pub unsafe fn place_call(
         delay: Duration::from_secs(u64::from(config.auto_answer().ring_time_seconds)),
         tone: config.auto_answer().tone,
     };
-    let (scheduled, transitions) = controller_step(&access.shared.controller, |controller| {
-        if controller.has_auto_answer_request(state.pbx_id) {
-            let scheduled = controller.schedule_auto_answers(state.pbx_id, auto_answer, now);
-            (Some(scheduled), controller.expire_auto_answers(now))
-        } else {
-            (None, Vec::new())
-        }
-    });
+    let auto_answer_worker = access.shared.workers.try_reserve().ok();
+    let (scheduled, transitions) = access
+        .shared
+        .controller
+        .schedule_ready_auto_answers(state.pbx_id, auto_answer, now)
+        .unwrap_or_else(|_| (None, Vec::new()));
     if let Some(Err(error)) = scheduled {
         ast_log(
             LogLevel::Warning,
             &format!("unable to schedule SCCP auto-answer: {error:?}"),
         );
     }
-    for transition in transitions {
+    if let Some(worker) = auto_answer_worker {
         let execute = access.clone();
-        access.handle.spawn(async move {
-            execute_answer_call_transition(&execute, transition).await;
+        worker.spawn(async move {
+            for transition in transitions {
+                execute_answer_call_transition(&execute, transition).await;
+            }
         });
     }
     Ok(())
@@ -1054,12 +1109,13 @@ pub unsafe fn hangup_channel(
     let Some(access) = module_access() else {
         return Ok(());
     };
-    let handset_call_id = controller_step(&access.shared.controller, |controller| {
-        controller
-            .active_or_primary_call_by_pbx(state.pbx_id)
-            .map(|call| call.sccp_id)
-    })
-    .unwrap_or(state.sccp_id);
+    let handset_call_id = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(state.pbx_id)
+        .map(|call| call.sccp_id)
+        .unwrap_or(state.sccp_id);
     let binding = access
         .shared
         .channels
@@ -1067,16 +1123,10 @@ pub unsafe fn hangup_channel(
         .get(&state.pbx_id)
         .cloned();
     if let Some(binding) = binding {
+        binding
+            .signals
+            .retire(RuntimeCallSignalKind::Hangup { handset_call_id });
         drop(binding.close());
-    }
-    if !access.enqueue_call_signal(
-        state.pbx_id,
-        RuntimeCallSignalKind::Hangup { handset_call_id },
-    ) {
-        let cleanup = access.clone();
-        access.handle.spawn(async move {
-            handle_runtime_hangup_signal(&cleanup, state.pbx_id, handset_call_id).await;
-        });
     }
     Ok(())
 }
@@ -1174,10 +1224,12 @@ pub unsafe fn send_text_to_channel(
     let access = module_access().ok_or(ChannelOperationError::Invalid)?;
     let state =
         unsafe { state_from_channel(channel.as_ptr()) }.ok_or(ChannelOperationError::Invalid)?;
-    let call = controller_step(&access.shared.controller, |controller| {
-        controller.active_or_primary_call_by_pbx(state.pbx_id)
-    })
-    .ok_or(ChannelOperationError::Invalid)?;
+    let call = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(state.pbx_id)
+        .ok_or(ChannelOperationError::Invalid)?;
     access
         .phone
         .try_send(PhoneCommand::new(
@@ -1284,10 +1336,12 @@ pub unsafe fn set_channel_audio_format(
     let requested = unsafe { native_channel::identify_audio_format(requested) }
         .map(super::runtime::pbx_audio_format_from_native)
         .ok_or(ChannelOperationError::Invalid)?;
-    let call = controller_step(&access.shared.controller, |controller| {
-        controller.active_or_primary_call_by_pbx(state.pbx_id)
-    })
-    .ok_or(ChannelOperationError::Invalid)?;
+    let call = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(state.pbx_id)
+        .ok_or(ChannelOperationError::Invalid)?;
     if pbx_audio_format(call.codec).is_ok_and(|current| current == requested) {
         return Ok(());
     }
@@ -1299,21 +1353,27 @@ pub unsafe fn set_channel_audio_format(
         &[requested],
     )
     .ok_or(ChannelOperationError::Invalid)?;
-    let previous = controller_step(&access.shared.controller, |controller| {
-        controller.set_held_codec(state.pbx_id, call.sccp_id, codec)
-    })
-    .ok_or(ChannelOperationError::Invalid)?;
-    if unsafe {
-        native_channel::set_private_audio_codec(
-            channel,
-            format_for(codec).ok_or(ChannelOperationError::Invalid)?,
-        )
-    }
-    .is_err()
-    {
-        let _ = controller_step(&access.shared.controller, |controller| {
-            controller.set_held_codec(state.pbx_id, call.sccp_id, previous)
-        });
+    let selected_format = format_for(codec).ok_or(ChannelOperationError::Invalid)?;
+    let mutation = access
+        .shared
+        .controller
+        .prepare_held_codec(state.pbx_id, call.sccp_id, codec)
+        .map_err(|_| ChannelOperationError::Invalid)?
+        .map_err(|_| ChannelOperationError::Invalid)?;
+    let previous = mutation.previous;
+    let native_result =
+        unsafe { native_channel::set_private_audio_codec(channel, selected_format) };
+    let committed = native_result.is_ok()
+        && access
+            .shared
+            .controller
+            .commit_codec_mutation(mutation)
+            .unwrap_or(false);
+    if !committed {
+        if let Some(previous_format) = format_for(previous) {
+            let _ = unsafe { native_channel::set_private_audio_codec(channel, previous_format) };
+        }
+        let _ = access.shared.controller.abort_codec_mutation(mutation);
         return Err(ChannelOperationError::Invalid);
     }
     ast_log(
@@ -1718,17 +1778,17 @@ fn complete_call_id(
     ordinal: usize,
     ringing_inbound_only: bool,
 ) -> Option<String> {
-    let call_ids = controller_step(&access.shared.controller, |controller| {
-        controller
-            .calls()
-            .filter(|call| {
-                !ringing_inbound_only
-                    || (call.direction == CallDirection::Inbound
-                        && call.state == CallState::Ringing)
-            })
-            .map(|call| call.sccp_id.0.to_string())
-            .collect::<Vec<_>>()
-    });
+    let call_ids = access
+        .shared
+        .controller
+        .snapshot()
+        .calls()
+        .filter(|call| {
+            !ringing_inbound_only
+                || (call.direction == CallDirection::Inbound && call.state == CallState::Ringing)
+        })
+        .map(|call| call.sccp_id.0.to_string())
+        .collect::<Vec<_>>();
     complete_cli_value(call_ids, prefix, ordinal, MAX_CALL_ID_BYTES)
 }
 
@@ -1765,9 +1825,11 @@ pub fn notify_mwi(line: &str, active: bool) {
         return;
     };
     for binding in access.inbound_line_bindings(line) {
-        let registered = controller_step(&access.shared.controller, |controller| {
-            controller.is_registered(&binding.device_id)
-        });
+        let registered = access
+            .shared
+            .controller
+            .snapshot()
+            .is_registered(&binding.device_id);
         if registered {
             access.spawn_phone(PhoneCommand::new(
                 binding.device_id,

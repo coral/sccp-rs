@@ -223,11 +223,59 @@ fn background_state_has_one_bounded_runtime_owner() {
     assert!(!management.contains("background_store"));
     assert!(!management.contains("background_mutations"));
     assert!(!management.contains("next_background_transaction_id"));
-    assert!(background.contains("mpsc::channel(BACKGROUND_REQUEST_CAPACITY)"));
+    assert!(background.contains("mailbox(RUNTIME_MAILBOX_CAPACITY)"));
+    assert!(background.contains("let (request, _admission) = request.into_parts()"));
     assert!(background.contains("store: BackgroundStore<AsteriskDatabase>"));
-    assert!(background.contains("requests.blocking_recv()"));
-    assert!(background.contains("BackgroundRequest::Shutdown"));
+    assert!(background.contains("self.mailbox.requests.recv()"));
+    assert!(background.contains("self.expire_responses()"));
+    assert!(background.contains("cancel_service_response"));
+    assert!(background.contains("send_session_confirmed"));
+    assert!(background.contains("self.requests.close()"));
     assert!(lifecycle.contains("runtime.spawn_blocking"));
+}
+
+#[test]
+fn runtime_registration_lifetimes_and_external_resolution_have_explicit_owners() {
+    let management = source("src/asterisk/runtime/management.rs");
+    let shared = rust_item(&management, "pub struct Shared");
+    let module = rust_item(&management, "pub struct Module");
+    for field in [
+        "manager_registrations",
+        "dialplan_registrations",
+        "http_registrations",
+    ] {
+        assert!(module.contains(field));
+        assert!(!shared.contains(field));
+    }
+    assert!(!shared.contains("system_message"));
+    assert!(!shared.contains("ExternalAddressCache"));
+    let media = source("src/asterisk/runtime/media.rs");
+    assert!(!media.contains(".refresh("));
+    assert!(!media.contains("ExternalAddressCache"));
+    let services = source("src/asterisk/runtime/services.rs");
+    let events = rust_item(&services, "pub async fn run_events");
+    assert!(events.contains_in_order(&["EventOwner::new()", "catch_dispatcher_panic"]));
+    assert!(events.contains("recover_after_panic()"));
+    assert!(events.contains("owner.workers.join_next_with_id()"));
+    let signals = rust_item(&services, "pub async fn run_call_signals");
+    assert!(!signals.contains("access.handle.spawn("));
+    assert!(signals.contains("CallQueue::new"));
+    assert!(source("src/runtime/call_queue.rs").contains("join_next_with_id"));
+    let lifecycle = source("src/asterisk/runtime/lifecycle.rs");
+    let stop = rust_item(&lifecycle, "pub fn stop");
+    assert!(stop.contains_in_order(&[
+        "control_requests.close()",
+        "manager_registrations.clear()",
+        "drained.await",
+        "self.signal_task.await",
+        "self.media_task.take()",
+        "tokio::join!(phone.shutdown(), self.event_task)",
+        "self.presence_task.await",
+        "self.resolver_task.await",
+        "self.publication_task.await",
+        "controller.close()",
+    ]));
+    assert!(!stop.contains("event_task.abort()"));
 }
 
 #[test]
@@ -373,7 +421,11 @@ fn conference_destination_work_is_owned_by_the_rust_runtime() {
     let runtime = source("src/asterisk/runtime/backend.rs");
     let supplementary = source("src/asterisk/runtime/backend/supplementary.rs");
     assert!(supplementary.contains("conference_destination_tasks"));
-    assert!(supplementary.contains("spawn_blocking"));
+    assert!(!supplementary.contains("spawn_blocking"));
+    let tasks = source("src/runtime/conference_tasks.rs");
+    assert!(tasks.contains("spawn_blocking_on"));
+    assert!(tasks.contains("worker_runtime.block_on(future)"));
+    assert!(supplementary.contains("application.run()"));
     assert!(runtime.contains("begin_shutdown"));
     let destination = rust_item(&supplementary, "fn start_conference_destination");
     assert!(destination.contains("conference_destination_failed("));
@@ -432,9 +484,17 @@ fn attended_transfer_runs_off_the_serial_handset_event_loop() {
     let calls = source("src/asterisk/phone/calls.rs");
     let transfer = source("src/asterisk/phone/transfer.rs");
     let completion = rust_item(&transfer, "pub(super) async fn execute_transfer_completion");
-    assert!(completion.contains("tokio::task::spawn_blocking"));
-    assert!(completion.contains("access.handle.spawn"));
-    assert!(completion.contains("retain_two_channels"));
+    assert!(completion.contains("workers.try_reserve()"));
+    assert!(completion.contains("PbxEffect::Transfer"));
+    assert!(completion.contains("execute_one_effect"));
+    let bridge = source("src/asterisk/runtime/bridge_owner.rs");
+    assert!(bridge.contains("workers.spawn_blocking"));
+    assert!(bridge.contains("BridgeAction::Transfer"));
+    assert!(!completion.contains("access.handle.spawn"));
+    let workers = source("src/runtime/workers.rs");
+    assert!(workers.contains("jobs.spawn(work)"));
+    assert!(workers.contains("jobs.join_next_with_id()"));
+    assert!(bridge.contains("with_two_channels"));
     assert!(
         completion.contains_literal("Transfer in progress")
             || transfer.contains_literal("Transfer in progress")
@@ -658,20 +718,23 @@ fn native_call_indications_use_one_ordered_rust_queue() {
     assert!(!answer_and_indicate.contains(".spawn("));
     let hangup = rust_item(&exports, "fn hangup_channel");
     assert!(hangup.contains("RuntimeCallSignalKind::Hangup"));
-    assert!(hangup.contains("if !access.enqueue_call_signal"));
-    assert!(hangup.contains("handle_runtime_hangup_signal"));
-
+    assert!(hangup.contains("signals.retire"));
+    assert!(!hangup.contains(".spawn("));
     let management = source("src/asterisk/runtime/management.rs");
-    assert!(management.contains("Mutex<RuntimeCallSignalQueue>"));
-    let lifecycle = source("src/asterisk/runtime/lifecycle.rs");
-    assert!(lifecycle.contains("checked_add(1)"));
-    assert!(lifecycle.contains("queue.sender.send(signal)"));
-
+    assert!(management.contains("CallLease<PbxCallId, RuntimeCallSignalKind>"));
+    assert!(!management.contains("Mutex<RuntimeCallSignalQueue>"));
+    let channel = source("src/asterisk/runtime/channel.rs");
+    let allocation = rust_item(&channel, "pub fn allocate_channel");
+    assert!(allocation.contains("call_signals"));
+    assert!(allocation.contains(".admit("));
+    let queue = source("src/runtime/call_queue.rs");
+    assert!(queue.contains("MailboxReservation"));
+    assert!(queue.contains("WorkPermit"));
+    assert!(!queue.contains("unbounded_channel"));
     let services = source("src/asterisk/runtime/services.rs");
-    assert!(services.contains("signal.sequence <= last_sequence"));
-    assert!(services.contains("HashMap::<PbxCallId, mpsc::UnboundedSender<RuntimeCallSignal>>"));
-    assert!(services.contains("handle_runtime_call_signal(&lane_access, signal).await"));
-    assert!(services.contains("controller.pbx_progress_with_media_mode"));
+    assert!(services.contains("CallQueue::new"));
+    assert!(!services.contains("UnboundedSender<RuntimeCallSignal>"));
+    assert!(services.contains("pbx_progress_with_media_mode"));
 
     let backend = source("src/asterisk/runtime/backend.rs");
     let handset = source("src/asterisk/runtime/backend/handset.rs");
@@ -733,26 +796,44 @@ fn unload_keeps_active_calls_subscriptions_and_conferences_in_one_ordered_drain(
         "manager_registrations",
         "http_registrations",
         "dialplan_registrations",
-        "uninstall_blf(&self.access)",
-        "self.event_task.abort()",
+        "drained.await",
         "shutdown_conferences(&self.access).await",
-        "shutdown_remote_hangups(&self.access).await",
         "shutdown_one_way_microphones(&self.access).await",
-        "phone.shutdown().await",
-        "registration_contexts",
         "self.parking_subscription.unsubscribe()",
-        "self.runtime.shutdown_timeout",
+        "self.signal_task.await",
+        "shutdown_remote_hangups(&self.access).await",
+        "tokio::join!(phone.shutdown(), self.event_task)",
+        "controller.close()",
+        "drop(self.runtime)",
     ];
     assert!(stop.contains_in_order(&ordered));
+
+    for task in [
+        "background_task",
+        "worker_task",
+        "parking_task",
+        "signal_task",
+        "dnd_schedule_task",
+        "server_task",
+        "bridge_task",
+        "presence_task",
+        "resolver_task",
+        "publication_task",
+    ] {
+        assert!(
+            stop.contains_in_order(&[&format!("self.{task}.await"), "drop(self.runtime)"]),
+            "completed {task} storage must be released before runtime destruction"
+        );
+    }
 
     let backend = source("src/asterisk/runtime/backend.rs");
     let conference_shutdown = rust_item(&backend, "async fn shutdown_conferences");
     for required in [
         "drain_conferences_for_shutdown",
-        "cancel_conference_announcement_locked",
+        "finish_conference_announcement",
         "execute_cleanup_effects",
-        "remaining_bridges",
-        "remaining_barge_bridges",
+        "bridge_runtime",
+        "BridgeAction::Drain",
         "remaining_calls",
         "remove_channel",
     ] {
@@ -762,9 +843,12 @@ fn unload_keeps_active_calls_subscriptions_and_conferences_in_one_ordered_drain(
         );
     }
 
-    let presence = source("src/asterisk/runtime/presence.rs");
-    let blf_shutdown = rust_item(&presence, "fn uninstall_blf");
-    assert!(blf_shutdown.contains(".clear();"));
+    let presence = source("src/asterisk/runtime/presence_owner.rs");
+    let presence_shutdown = rust_item(&presence, "fn run");
+    assert!(presence_shutdown.contains("self.blf.clear()"));
+    assert!(presence_shutdown.contains("self.mwi.clear()"));
+    assert!(presence_shutdown.contains("self.contexts.registry.clear()"));
+    assert!(!source("src/asterisk/runtime/management.rs").contains("blf_subscriptions: Mutex"));
 
     let exports = source("src/asterisk/exports.rs");
     let unload = rust_item(&exports, "fn stop_module");
@@ -997,4 +1081,41 @@ fn release_artifacts_are_versioned_and_debug_builds_are_explicit() {
 
     let build = source("build.rs");
     assert!(build.contains("\"x86_64\" | \"aarch64\""));
+}
+
+#[test]
+fn presence_and_schedule_workers_own_subscriptions_and_persisted_schedule_state() {
+    let shared = source("src/asterisk/runtime/management.rs");
+    for field in [
+        "mwi_subscriptions:",
+        "blf_subscriptions:",
+        "published_line_states:",
+        "dnd_schedule_store:",
+        "registration_contexts:",
+    ] {
+        assert!(
+            !shared.contains(field),
+            "shared native state retained {field}"
+        );
+    }
+    let presence = source("src/asterisk/runtime/presence_owner.rs");
+    assert!(presence.contains("blf: BlfSubscriptions<AsteriskHints>"));
+    assert!(presence.contains("mwi: HashMap<String, MwiEntry>"));
+    assert!(presence.contains("OwnedPermit<StageFinish>"));
+    assert!(presence.contains("WorkPermit"));
+    assert!(
+        presence.contains("registry: RegistrationContextRegistry<AsteriskRegistrationExtensions>")
+    );
+    assert!(presence.contains("PendingRegistrationContexts"));
+    assert!(presence.contains("retire_disconnected"));
+    assert!(presence.contains("self.staged_contexts.is_empty()"));
+    let callback = source("src/asterisk/native/presence/mwi.rs");
+    assert!(!callback.contains("module_access"));
+    assert!(!callback.contains("notify_mwi"));
+    let schedule = source("src/asterisk/runtime/dnd_schedule.rs");
+    assert!(schedule.contains("schedules: DndScheduleRegistry"));
+    assert!(schedule.contains("store: DndScheduleStore<AsteriskDatabase>"));
+    assert!(!schedule.contains("lock_unpoisoned"));
+    assert!(schedule.contains("MailboxReservation<ScheduleCommand>"));
+    assert!(schedule.contains("lease: ConfigurationLease"));
 }

@@ -179,12 +179,12 @@ pub use server::{
     HandsetStatusMessage, IncomingOfferDelivery, IncomingOfferReceipt, IncomingPresentation,
     IncomingRing, MAX_REGISTRATION_BACKOFF, MIN_REGISTRATION_BACKOFF, MediaStatisticsSnapshot,
     MulticastMediaRoute, MultimediaReceiveDescriptor, MultimediaTransmitControl,
-    MultimediaTransmitDescriptor, PARKING_MENU_MAX_ITEMS, ParkingMenuEntry, ReceiveChannelPurpose,
-    ReconfigureResult, RecordingButtonState, RegistrationFallback, RegistrationTokenPolicy, Server,
-    ServerConfig, ServerError, ServerHandle, ServerIngress, SignalingServerRoute, SignalingSocket,
-    SocketQosFailure, SocketQosMark, SocketQosPolicy, SocketQosReport, StationIo,
-    StationSessionTarget, StationSocketQos, TransmitOpenOutcome, VideoPictureReference,
-    VideoPictureReferences, apply_socket_qos,
+    MultimediaTransmitDescriptor, PARKING_MENU_MAX_ITEMS, ParkingMenuEntry, PriorityEvent,
+    PriorityEventPermit, ReceiveChannelPurpose, ReconfigureResult, RecordingButtonState,
+    RegistrationFallback, RegistrationTokenPolicy, Server, ServerConfig, ServerError, ServerHandle,
+    ServerIngress, SignalingServerRoute, SignalingSocket, SocketQosFailure, SocketQosMark,
+    SocketQosPolicy, SocketQosReport, StationIo, StationSessionTarget, StationSocketQos,
+    TransmitOpenOutcome, VideoPictureReference, VideoPictureReferences, apply_socket_qos,
 };
 pub use server::{
     ObservationConnectionId, ServerObservation, ServerObservationKind, SignalingDirection,

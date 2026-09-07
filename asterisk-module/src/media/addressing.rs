@@ -198,6 +198,13 @@ pub struct ExternalAddressCache<R> {
     expires_at: Option<Instant>,
 }
 
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) struct ExternalAddressCheckpoint {
+    hostname: Option<String>,
+    resolved: ResolvedExternalAddresses,
+    expires_at: Option<Instant>,
+}
+
 impl<R> ExternalAddressCache<R>
 where
     R: HostResolver,
@@ -213,6 +220,34 @@ where
 
     pub const fn current(&self) -> ResolvedExternalAddresses {
         self.resolved
+    }
+
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn refresh_deadline(&self) -> Option<Instant> {
+        self.expires_at
+    }
+
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn checkpoint(&self) -> ExternalAddressCheckpoint {
+        ExternalAddressCheckpoint {
+            hostname: self.hostname.clone(),
+            resolved: self.resolved,
+            expires_at: self.expires_at,
+        }
+    }
+
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn restore(&mut self, checkpoint: ExternalAddressCheckpoint) {
+        self.hostname = checkpoint.hostname;
+        self.resolved = checkpoint.resolved;
+        self.expires_at = checkpoint.expires_at;
+    }
+
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn reset_to(&mut self, fallback: ResolvedExternalAddresses) {
+        self.hostname = None;
+        self.expires_at = None;
+        self.resolved = fallback;
     }
 
     /// Refresh an external address when its configured lifetime expires.

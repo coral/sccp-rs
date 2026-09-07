@@ -4,7 +4,7 @@ use super::{
     AsteriskBackend, AsteriskBackendError, AsteriskChannel, AsteriskChannelMetadata, CString,
     CallId, ChannelAllocationOwner, ChannelAllocationRequest, ChannelBackend, Codec, LineBinding,
     NORMAL_CLEARING, NonNull, PbxCallId, PbxVideoFormat, allocate_channel, c_string,
-    controller_step, native_channel, prepare_channel_allocation_text, ptr, with_channel,
+    native_channel, prepare_channel_allocation_text, ptr, with_channel,
 };
 
 struct RoutingText {
@@ -104,13 +104,17 @@ impl ChannelBackend for AsteriskBackend<'_> {
         // Stage every fallible boundary conversion before reading or mutating
         // controller/native channel state. Invalid text must be a pure reject.
         let routing = prepare_routing_text(call_id, context, destination)?;
-        let mut metadata = controller_step(&self.access.shared.controller, |controller| {
-            controller.call_metadata(call_id).cloned()
-        })
-        .ok_or(AsteriskBackendError::CallUnavailable {
-            operation: "set dialed number",
-            call_id,
-        })?;
+        let mut metadata = self
+            .access
+            .shared
+            .controller
+            .snapshot()
+            .call_metadata(call_id)
+            .cloned()
+            .ok_or(AsteriskBackendError::CallUnavailable {
+                operation: "set dialed number",
+                call_id,
+            })?;
         metadata.dnid = Some(destination.to_owned());
         metadata
             .validate()
@@ -134,9 +138,11 @@ impl ChannelBackend for AsteriskBackend<'_> {
             call_id,
         }))?;
         if !matches!(
-            controller_step(&self.access.shared.controller, |controller| {
-                controller.set_call_metadata(call_id, metadata)
-            }),
+            self.access
+                .shared
+                .controller
+                .set_call_metadata(call_id, metadata)
+                .unwrap_or_else(|_| Ok(false)),
             Ok(true)
         ) {
             return Err(AsteriskBackendError::CallUnavailable {

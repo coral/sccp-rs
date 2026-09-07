@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use super::{Access, Arc, DeviceFeatureState, DndMode, RuntimeInventoryProvider, controller_step};
+use super::{Access, Arc, DeviceFeatureState, DndMode, RuntimeInventoryProvider};
 use crate::ami::cli::{
     CliCapability, CliCapabilityStatus, CliChannel, CliDeviceRuntime, CliFeature,
     CliInventoryCommand, CliInventoryError, CliInventorySnapshot, complete_cli_inventory,
@@ -50,7 +50,8 @@ fn runtime_cli_inventory_snapshot(
         .map_err(|_| RuntimeCliInventoryError::Unavailable)?;
     let status = RuntimeStatusProvider::snapshot(&provider)
         .map_err(|_| RuntimeCliInventoryError::Unavailable)?;
-    let device_runtime = controller_step(&access.shared.controller, |controller| {
+    let device_runtime = {
+        let controller = access.shared.controller.snapshot();
         inventory
             .devices
             .iter()
@@ -88,7 +89,7 @@ fn runtime_cli_inventory_snapshot(
                 }
             })
             .collect()
-    });
+    };
     let channels = status
         .calls
         .into_iter()

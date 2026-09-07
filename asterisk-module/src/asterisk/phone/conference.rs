@@ -8,18 +8,20 @@ use super::{
     ConferencePhase, ConferenceRejection, ConferenceStartProgress, DeviceId, DriverEffect,
     Duration, EffectExecutionError, Instant, LogLevel, PbxAudioFormat, PbxEffect, PhoneCommand,
     PhoneCommandAction, ServiceProviderError, ast_log, cancel_conference_announcement,
-    conference_participant_service_error, controller_step, execute_cleanup_effects,
-    execute_effects, execute_effects_confirmed, execute_handset_effect, execute_one_effect,
-    preferred_codec, remove_channel,
+    conference_participant_service_error, execute_cleanup_effects, execute_effects,
+    execute_effects_confirmed, execute_handset_effect, execute_one_effect, preferred_codec,
+    remove_channel,
 };
 
 pub(super) fn conference_mutation_is_active(
     access: &Access,
     mutation: ConferenceMutationToken,
 ) -> bool {
-    controller_step(&access.shared.controller, |controller| {
-        controller.conference_mutation_is_active(mutation)
-    })
+    access
+        .shared
+        .controller
+        .snapshot()
+        .conference_mutation_is_active(mutation)
 }
 
 pub(super) async fn handle_barge_soft_key(
@@ -48,15 +50,20 @@ pub(super) async fn handle_barge_soft_key(
             .await;
         return;
     };
-    let result = controller_step(&access.shared.controller, |controller| {
-        controller.barge(call_id, binding, codec, mode)
-    });
+    let result = access
+        .shared
+        .controller
+        .barge(call_id, binding, codec, mode)
+        .unwrap_or_else(|_| Err(crate::runtime::controller::BargeRejection::Unavailable));
     match result {
         Ok(effects) => {
             if execute_effects_confirmed(access, effects).await.is_ok()
-                && let Some(pbx_id) = controller_step(&access.shared.controller, |controller| {
-                    controller.call(call_id).map(|call| call.pbx_id)
-                })
+                && let Some(pbx_id) = access
+                    .shared
+                    .controller
+                    .snapshot()
+                    .call(call_id)
+                    .map(|call| call.pbx_id)
             {
                 access.enqueue_recording_eligibility(pbx_id);
             }
@@ -90,9 +97,7 @@ pub(super) async fn handle_join_soft_key(
     call_id: CallId,
     line_instance: u32,
 ) {
-    let state = controller_step(&access.shared.controller, |controller| {
-        controller.call_state(call_id)
-    });
+    let state = access.shared.controller.snapshot().call_state(call_id);
     if state == Some(CallState::RemoteInUse) {
         handle_barge_soft_key(
             access,
@@ -115,26 +120,24 @@ pub(super) async fn handle_join_soft_key(
         play_general_announcements: conference.play_general_announcements,
         play_participant_announcements: conference.play_participant_announcements,
     });
-    let result = controller_step(&access.shared.controller, |controller| {
-        controller
-            .join_calls_with_media(
-                &device_id,
-                call_id,
-                permitted,
-                media_policy.unwrap_or_default(),
-            )
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation(call_id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceRejection::Conflict)
-            })
-    });
+    let result = access
+        .shared
+        .controller
+        .prepare_join_calls(
+            device_id.clone(),
+            call_id,
+            permitted,
+            media_policy.unwrap_or_default(),
+        )
+        .unwrap_or_else(|_| Err(crate::runtime::controller::ConferenceRejection::Unavailable));
     match result {
         Ok((mutation, effects)) => {
-            let session = controller_step(&access.shared.controller, |controller| {
-                controller.conference_session(call_id).cloned()
-            });
+            let session = access
+                .shared
+                .controller
+                .snapshot()
+                .conference_session(call_id)
+                .cloned();
             if let Some(session) = session {
                 execute_selected_conference_merge(access, session, mutation, effects).await;
             }
@@ -152,9 +155,12 @@ pub(super) async fn handle_join_soft_key(
 }
 
 pub async fn show_conference_list(access: &Access, device_id: DeviceId, call_id: CallId) {
-    let session = controller_step(&access.shared.controller, |controller| {
-        controller.conference_session(call_id).cloned()
-    });
+    let session = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session(call_id)
+        .cloned();
     let Some(session) = session.filter(|session| {
         session.phase == ConferencePhase::Active && session.device_id == device_id
     }) else {
@@ -201,9 +207,12 @@ pub(super) async fn handle_conference_list_action(
         | ConferenceListAction::Demote { conference_id, .. }
         | ConferenceListAction::End { conference_id } => conference_id,
     };
-    let session = controller_step(&access.shared.controller, |controller| {
-        controller.conference_session_by_id(conference_id).cloned()
-    });
+    let session = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session_by_id(conference_id)
+        .cloned();
     let Some(session) = session.filter(|session| {
         session.phase == ConferencePhase::Active && session.device_id == device_id
     }) else {
@@ -254,9 +263,13 @@ pub(super) async fn handle_conference_list_action(
                 set_conference_participant_moderator(access, session, participant_id, false).await;
         }
         ConferenceListAction::End { .. } => {
-            let effects = controller_step(&access.shared.controller, |controller| {
-                controller.end_conference_by_moderator(&device_id, session.id)
-            });
+            let effects = access
+                .shared
+                .controller
+                .end_conference_by_moderator(&device_id, session.id)
+                .unwrap_or_else(|_| {
+                    Err(crate::runtime::controller::ConferenceEndRejection::Unavailable)
+                });
             match effects {
                 Ok(effects) => {
                     cancel_conference_announcement(access, session.id);
@@ -286,16 +299,13 @@ pub async fn remove_conference_participant(
     session: crate::runtime::controller::ConferenceSession,
     participant_id: sccp_protocol::ParticipantId,
 ) -> Result<(), ServiceProviderError> {
-    let effects = controller_step(&access.shared.controller, |controller| {
-        controller
-            .begin_conference_participant_removal(&session.device_id, session.id, participant_id)
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation_by_id(session.id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceParticipantRejection::Conflict)
-            })
-    });
+    let effects = access
+        .shared
+        .controller
+        .prepare_conference_removal(session.device_id.clone(), session.id, participant_id)
+        .unwrap_or_else(|_| {
+            Err(crate::runtime::controller::ConferenceParticipantRejection::Unavailable)
+        });
     let (mutation, effects) = match effects {
         Ok(operation) => operation,
         Err(rejection) => {
@@ -327,23 +337,20 @@ pub async fn remove_conference_participant(
             return Err(ServiceProviderError::ConferenceConflict);
         }
         if let Err(error) = execute_one_effect(access, &backend, index, effect).await {
-            let aborted = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return false;
-                }
-                let aborted =
-                    controller.abort_conference_participant_removal(session.id, participant_id);
-                controller.complete_conference_mutation(mutation);
-                aborted
-            });
+            let aborted = access
+                .shared
+                .controller
+                .abort_reserved_conference_removal(mutation, session.id, participant_id)
+                .unwrap_or_else(|_| false);
             if !aborted {
-                let removed = controller_step(&access.shared.controller, |controller| {
-                    controller
-                        .conference_session_by_id(session.id)
-                        .is_some_and(|conference| {
-                            conference.participants.get(participant_id).is_none()
-                        })
-                });
+                let removed = access
+                    .shared
+                    .controller
+                    .snapshot()
+                    .conference_session_by_id(session.id)
+                    .is_some_and(|conference| {
+                        conference.participants.get(participant_id).is_none()
+                    });
                 if removed {
                     return Ok(());
                 }
@@ -366,33 +373,33 @@ pub async fn remove_conference_participant(
         }
     }
 
-    let cleanup = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return None;
-        }
-        let cleanup = controller.conference_participant_removed(session.id, participant_id);
-        controller.complete_conference_mutation(mutation);
-        cleanup
-    });
+    let cleanup = access
+        .shared
+        .controller
+        .commit_reserved_conference_removal(mutation, session.id, participant_id)
+        .unwrap_or_else(|_| None);
     let committed_here = cleanup.is_some();
     if let Some(cleanup) = cleanup {
         execute_effects(access, cleanup).await;
     }
-    let removed = controller_step(&access.shared.controller, |controller| {
-        controller
-            .conference_session_by_id(session.id)
-            .is_some_and(|conference| conference.participants.get(participant_id).is_none())
-    });
+    let removed = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session_by_id(session.id)
+        .is_some_and(|conference| conference.participants.get(participant_id).is_none());
     if removed {
         if !committed_here {
             return Ok(());
         }
-        let announcement = controller_step(&access.shared.controller, |controller| {
-            controller.conference_announcement_effects(
+        let announcement = access
+            .shared
+            .controller
+            .snapshot()
+            .conference_announcement_effects(
                 session.id,
                 ConferenceAnnouncement::ParticipantRemoved(participant_id),
-            )
-        });
+            );
         execute_effects(access, announcement).await;
         show_conference_list_if_configured(access, &session).await;
         Ok(())
@@ -407,21 +414,13 @@ pub async fn set_conference_participant_muted(
     participant_id: sccp_protocol::ParticipantId,
     muted: bool,
 ) -> Result<(), ServiceProviderError> {
-    let effects = controller_step(&access.shared.controller, |controller| {
-        controller
-            .begin_conference_participant_mute(
-                &session.device_id,
-                session.id,
-                participant_id,
-                muted,
-            )
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation_by_id(session.id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceParticipantRejection::Conflict)
-            })
-    });
+    let effects = access
+        .shared
+        .controller
+        .prepare_conference_mute(session.device_id.clone(), session.id, participant_id, muted)
+        .unwrap_or_else(|_| {
+            Err(crate::runtime::controller::ConferenceParticipantRejection::Unavailable)
+        });
     let (mutation, effects) = match effects {
         Ok(operation) => operation,
         Err(rejection) => {
@@ -453,12 +452,11 @@ pub async fn set_conference_participant_muted(
             return Err(ServiceProviderError::ConferenceConflict);
         }
         if let Err(error) = execute_one_effect(access, &backend, index, effect).await {
-            controller_step(&access.shared.controller, |controller| {
-                if controller.conference_mutation_is_active(mutation) {
-                    controller.abort_conference_participant_mute(session.id, participant_id, muted);
-                    controller.complete_conference_mutation(mutation);
-                }
-            });
+            access
+                .shared
+                .controller
+                .abort_reserved_conference_mute(mutation, session.id, participant_id, muted)
+                .unwrap_or_else(|_| ());
             ast_log(
                 LogLevel::Warning,
                 &format!("conference participant mute failed: {error}"),
@@ -477,25 +475,24 @@ pub async fn set_conference_participant_muted(
         }
     }
 
-    let committed = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return false;
-        }
-        let committed = controller.conference_participant_muted(session.id, participant_id, muted);
-        controller.complete_conference_mutation(mutation);
-        committed
-    });
+    let committed = access
+        .shared
+        .controller
+        .commit_reserved_conference_mute(mutation, session.id, participant_id, muted)
+        .unwrap_or_else(|_| false);
     if committed {
-        let announcement = controller_step(&access.shared.controller, |controller| {
-            controller.conference_announcement_effects(
+        let announcement = access
+            .shared
+            .controller
+            .snapshot()
+            .conference_announcement_effects(
                 session.id,
                 if muted {
                     ConferenceAnnouncement::ParticipantMuted(participant_id)
                 } else {
                     ConferenceAnnouncement::ParticipantUnmuted(participant_id)
                 },
-            )
-        });
+            );
         execute_effects(access, announcement).await;
         show_conference_list_if_configured(access, &session).await;
         Ok(())
@@ -510,21 +507,18 @@ pub async fn set_conference_participant_moderator(
     participant_id: sccp_protocol::ParticipantId,
     moderator: bool,
 ) -> Result<(), ServiceProviderError> {
-    let effects = controller_step(&access.shared.controller, |controller| {
-        controller
-            .begin_conference_participant_role_change(
-                &session.device_id,
-                session.id,
-                participant_id,
-                moderator,
-            )
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation_by_id(session.id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceParticipantRejection::Conflict)
-            })
-    });
+    let effects = access
+        .shared
+        .controller
+        .prepare_conference_role_change(
+            session.device_id.clone(),
+            session.id,
+            participant_id,
+            moderator,
+        )
+        .unwrap_or_else(|_| {
+            Err(crate::runtime::controller::ConferenceParticipantRejection::Unavailable)
+        });
     let (mutation, effects) = match effects {
         Ok(operation) => operation,
         Err(rejection) => {
@@ -583,16 +577,16 @@ pub async fn set_conference_participant_moderator(
             _ => None,
         };
         if let Err(error) = execute_one_effect(access, &backend, index, effect).await {
-            controller_step(&access.shared.controller, |controller| {
-                if controller.conference_mutation_is_active(mutation) {
-                    controller.abort_conference_participant_role_change(
-                        session.id,
-                        participant_id,
-                        moderator,
-                    );
-                    controller.complete_conference_mutation(mutation);
-                }
-            });
+            access
+                .shared
+                .controller
+                .abort_reserved_conference_role_change(
+                    mutation,
+                    session.id,
+                    participant_id,
+                    moderator,
+                )
+                .unwrap_or_else(|_| ());
             compensation.reverse();
             execute_cleanup_effects(access, compensation).await;
             ast_log(
@@ -618,15 +612,11 @@ pub async fn set_conference_participant_moderator(
         }
     }
 
-    let committed = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return false;
-        }
-        let committed =
-            controller.conference_participant_role_changed(session.id, participant_id, moderator);
-        controller.complete_conference_mutation(mutation);
-        committed
-    });
+    let committed = access
+        .shared
+        .controller
+        .commit_reserved_conference_role_change(mutation, session.id, participant_id, moderator)
+        .unwrap_or_else(|_| false);
     if committed {
         show_conference_list_if_configured(access, &session).await;
         Ok(())
@@ -643,9 +633,7 @@ pub(super) async fn start_conference_invite(
     moderator_call_id: CallId,
     line_instance: u32,
 ) {
-    let current = controller_step(&access.shared.controller, |controller| {
-        controller.call(moderator_call_id)
-    });
+    let current = access.shared.controller.snapshot().call(moderator_call_id);
     let Some(current) = current.filter(|call| call.device_id == device_id) else {
         return;
     };
@@ -681,22 +669,17 @@ pub(super) async fn start_conference_invite(
         return;
     };
     let invite_call_id = access.phone.reserve_call_id();
-    let result = controller_step(&access.shared.controller, |controller| {
-        controller
-            .begin_conference_invite(
-                moderator_call_id,
-                invite_call_id,
-                binding,
-                codec,
-                Instant::now(),
-            )
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation(invite_call_id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceRejection::Conflict)
-            })
-    });
+    let result = access
+        .shared
+        .controller
+        .prepare_conference_invite(
+            moderator_call_id,
+            invite_call_id,
+            binding,
+            codec,
+            Instant::now(),
+        )
+        .unwrap_or_else(|_| Err(crate::runtime::controller::ConferenceRejection::Unavailable));
     match result {
         Ok((mutation, effects)) => {
             execute_conference_invite_start(access, invite_call_id, mutation, effects).await;
@@ -719,9 +702,12 @@ pub(super) async fn handle_conference_soft_key(
     call_id: CallId,
     line_instance: u32,
 ) {
-    let session = controller_step(&access.shared.controller, |controller| {
-        controller.conference_session(call_id).cloned()
-    });
+    let session = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session(call_id)
+        .cloned();
     if let Some(session) = session {
         if session.phase == ConferencePhase::Active {
             if session
@@ -729,16 +715,13 @@ pub(super) async fn handle_conference_soft_key(
                 .as_ref()
                 .is_some_and(|invite| invite.participant.handset_call_id == call_id)
             {
-                let effects = controller_step(&access.shared.controller, |controller| {
-                    controller
-                        .confirm_conference_invite(call_id)
-                        .and_then(|effects| {
-                            controller
-                                .claim_conference_mutation(call_id)
-                                .map(|mutation| (mutation, effects))
-                                .ok_or(ConferenceRejection::Conflict)
-                        })
-                });
+                let effects = access
+                    .shared
+                    .controller
+                    .prepare_confirm_conference_invite(call_id)
+                    .unwrap_or_else(|_| {
+                        Err(crate::runtime::controller::ConferenceRejection::Unavailable)
+                    });
                 match effects {
                     Ok((mutation, effects)) => {
                         execute_conference_invite_merge(access, session, mutation, effects).await
@@ -783,14 +766,11 @@ pub(super) async fn handle_conference_soft_key(
                 .await;
             return;
         }
-        let effects = controller_step(&access.shared.controller, |controller| {
-            controller.confirm_conference(call_id).and_then(|effects| {
-                controller
-                    .claim_conference_mutation(call_id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceRejection::Conflict)
-            })
-        });
+        let effects = access
+            .shared
+            .controller
+            .prepare_confirm_conference(call_id)
+            .unwrap_or_else(|_| Err(crate::runtime::controller::ConferenceRejection::Unavailable));
         match effects {
             Ok((mutation, effects)) => {
                 execute_conference_merge(access, session, mutation, effects).await
@@ -812,9 +792,7 @@ pub(super) async fn handle_conference_soft_key(
         return;
     }
 
-    let current = controller_step(&access.shared.controller, |controller| {
-        controller.call(call_id)
-    });
+    let current = access.shared.controller.snapshot().call(call_id);
     let Some(current) = current.filter(|call| call.device_id == device_id) else {
         return;
     };
@@ -849,26 +827,21 @@ pub(super) async fn handle_conference_soft_key(
         return;
     };
     let consultation_call_id = access.phone.reserve_call_id();
-    let result = controller_step(&access.shared.controller, |controller| {
-        controller
-            .begin_conference_with_media(
-                ConferenceConsultationRequest {
-                    original_call_id: call_id,
-                    consultation_call_id,
-                    binding,
-                    codec,
-                    now: Instant::now(),
-                    permitted,
-                },
-                media_policy.unwrap_or_default(),
-            )
-            .and_then(|effects| {
-                controller
-                    .claim_conference_mutation(consultation_call_id)
-                    .map(|mutation| (mutation, effects))
-                    .ok_or(ConferenceRejection::Conflict)
-            })
-    });
+    let result = access
+        .shared
+        .controller
+        .prepare_conference(
+            ConferenceConsultationRequest {
+                original_call_id: call_id,
+                consultation_call_id,
+                binding,
+                codec,
+                now: Instant::now(),
+                permitted,
+            },
+            media_policy.unwrap_or_default(),
+        )
+        .unwrap_or_else(|_| Err(crate::runtime::controller::ConferenceRejection::Unavailable));
     match result {
         Ok((mutation, effects)) => {
             execute_conference_start(access, consultation_call_id, mutation, effects).await;
@@ -896,11 +869,12 @@ pub(super) async fn handle_conference_destination(
         .line_binding(&device_id, line_instance)
         .as_ref()
         .and_then(|binding| config.conference_dialing_for_binding(binding));
-    let target_matches = controller_step(&access.shared.controller, |controller| {
-        controller
-            .call(call_id)
-            .is_some_and(|call| call.device_id == device_id && call.line_instance == line_instance)
-    });
+    let target_matches = access
+        .shared
+        .controller
+        .snapshot()
+        .call(call_id)
+        .is_some_and(|call| call.device_id == device_id && call.line_instance == line_instance);
     if !target_matches {
         return;
     }
@@ -913,9 +887,11 @@ pub(super) async fn handle_conference_destination(
             "Conference dialing unavailable",
         )
         .await;
-        let effects = controller_step(&access.shared.controller, |controller| {
-            controller.hangup(call_id)
-        });
+        let effects = access
+            .shared
+            .controller
+            .hangup(call_id)
+            .unwrap_or_else(|_| Vec::new());
         execute_cleanup_effects(access, effects).await;
         return;
     };
@@ -923,14 +899,18 @@ pub(super) async fn handle_conference_destination(
         debug_assert!(false, "enabled conference policy lost its destination");
         return;
     };
-    let result = controller_step(&access.shared.controller, |controller| {
-        controller.begin_conference_destination(ConferenceDestinationRequest {
+    let result = access
+        .shared
+        .controller
+        .begin_conference_destination(ConferenceDestinationRequest {
             device_id: device_id.clone(),
             handset_call_id: call_id,
             destination,
             application_options: policy.application_options,
         })
-    });
+        .unwrap_or_else(|_| {
+            Err(crate::runtime::controller::ConferenceDestinationRejection::Unavailable)
+        });
     match result {
         Ok(effects) => {
             execute_conference_destination_start(access, device_id, call_id, effects).await
@@ -938,9 +918,11 @@ pub(super) async fn handle_conference_destination(
         Err(_) => {
             display_conference_prompt(access, device_id, call_id, "Conference dialing unavailable")
                 .await;
-            let effects = controller_step(&access.shared.controller, |controller| {
-                controller.hangup(call_id)
-            });
+            let effects = access
+                .shared
+                .controller
+                .hangup(call_id)
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, effects).await;
         }
     }
@@ -971,9 +953,12 @@ pub(super) async fn execute_conference_destination_start(
     let backend = AsteriskBackend::new(access);
     let mut completed_holds = Vec::new();
     for (index, effect) in effects.into_iter().enumerate() {
-        if !controller_step(&access.shared.controller, |controller| {
-            controller.conference_mutation_is_active(mutation)
-        }) {
+        if !access
+            .shared
+            .controller
+            .snapshot()
+            .conference_mutation_is_active(mutation)
+        {
             return;
         }
         let held_call = match &effect {
@@ -987,23 +972,23 @@ pub(super) async fn execute_conference_destination_start(
             );
             display_conference_prompt(access, device_id, call_id, "Conference dialing failed")
                 .await;
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                controller.conference_destination_failed(
-                    mutation,
-                    call_id,
-                    &held_calls,
-                    &completed_holds,
-                )
-            });
+            let cleanup = access
+                .shared
+                .controller
+                .conference_destination_failed(mutation, call_id, &held_calls, &completed_holds)
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             return;
         }
         if let Some(held_call) = held_call {
             completed_holds.push(held_call);
         }
-        if !controller_step(&access.shared.controller, |controller| {
-            controller.conference_mutation_is_active(mutation)
-        }) {
+        if !access
+            .shared
+            .controller
+            .snapshot()
+            .conference_mutation_is_active(mutation)
+        {
             return;
         }
     }
@@ -1017,11 +1002,12 @@ pub(super) async fn execute_conference_start(
 ) {
     let backend = AsteriskBackend::new(access);
     let mut progress = ConferenceStartProgress::default();
-    let consultation_pbx = controller_step(&access.shared.controller, |controller| {
-        controller
-            .conference_session(consultation_call_id)
-            .map(|session| session.consultation_call_id)
-    });
+    let consultation_pbx = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session(consultation_call_id)
+        .map(|session| session.consultation_call_id);
     for (index, effect) in effects.into_iter().enumerate() {
         if !conference_mutation_is_active(access, mutation) {
             if progress.channel_created()
@@ -1037,20 +1023,18 @@ pub(super) async fn execute_conference_start(
                 LogLevel::Warning,
                 &format!("conference consultation setup failed: {error}"),
             );
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return Vec::new();
-                }
-                let cleanup = controller.abort_conference(
+            let cleanup = access
+                .shared
+                .controller
+                .abort_reserved_conference(
+                    mutation,
                     consultation_call_id,
                     false,
                     progress.channel_created(),
                     progress.active_leg_held(),
                     progress.active_handset_held(),
-                );
-                controller.complete_conference_mutation(mutation);
-                cleanup
-            });
+                )
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             if progress.channel_created()
                 && let Some(pbx_id) = consultation_pbx
@@ -1069,9 +1053,11 @@ pub(super) async fn execute_conference_start(
             return;
         }
     }
-    controller_step(&access.shared.controller, |controller| {
-        controller.complete_conference_mutation(mutation)
-    });
+    access
+        .shared
+        .controller
+        .complete_conference_mutation(mutation)
+        .unwrap_or_else(|_| false);
 }
 
 pub(super) async fn execute_conference_invite_start(
@@ -1082,12 +1068,13 @@ pub(super) async fn execute_conference_invite_start(
 ) {
     let backend = AsteriskBackend::new(access);
     let mut progress = ConferenceStartProgress::default();
-    let invite_pbx = controller_step(&access.shared.controller, |controller| {
-        controller
-            .conference_session(invite_call_id)
-            .and_then(|session| session.pending_invite.as_ref())
-            .map(|invite| invite.participant.pbx_call_id)
-    });
+    let invite_pbx = access
+        .shared
+        .controller
+        .snapshot()
+        .conference_session(invite_call_id)
+        .and_then(|session| session.pending_invite.as_ref())
+        .map(|invite| invite.participant.pbx_call_id);
     for (index, effect) in effects.into_iter().enumerate() {
         if !conference_mutation_is_active(access, mutation) {
             if progress.channel_created()
@@ -1103,19 +1090,17 @@ pub(super) async fn execute_conference_invite_start(
                 LogLevel::Warning,
                 &format!("conference invite setup failed: {error}"),
             );
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return Vec::new();
-                }
-                let cleanup = controller.abort_conference_invite(
+            let cleanup = access
+                .shared
+                .controller
+                .abort_reserved_conference_invite(
+                    mutation,
                     invite_call_id,
                     progress.channel_created(),
                     progress.active_leg_held(),
                     progress.active_handset_held(),
-                );
-                controller.complete_conference_mutation(mutation);
-                cleanup
-            });
+                )
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             if progress.channel_created()
                 && let Some(pbx_id) = invite_pbx
@@ -1134,9 +1119,11 @@ pub(super) async fn execute_conference_invite_start(
             return;
         }
     }
-    controller_step(&access.shared.controller, |controller| {
-        controller.complete_conference_mutation(mutation)
-    });
+    access
+        .shared
+        .controller
+        .complete_conference_mutation(mutation)
+        .unwrap_or_else(|_| false);
 }
 
 const CONFERENCE_BRIDGE_READY_RETRY_INTERVAL: Duration = Duration::from_millis(20);
@@ -1238,20 +1225,18 @@ pub(super) async fn execute_conference_merge(
                     LogLevel::Warning,
                     &format!("conference merge failed: {error}"),
                 );
-                let cleanup = controller_step(&access.shared.controller, |controller| {
-                    if !controller.conference_mutation_is_active(mutation) {
-                        return Vec::new();
-                    }
-                    let cleanup = controller.abort_conference(
+                let cleanup = access
+                    .shared
+                    .controller
+                    .abort_reserved_conference(
+                        mutation,
                         session.consultation_handset_call_id,
                         bridge_created,
                         true,
                         !original_resumed,
                         true,
-                    );
-                    controller.complete_conference_mutation(mutation);
-                    cleanup
-                });
+                    )
+                    .unwrap_or_else(|_| Vec::new());
                 execute_cleanup_effects(access, cleanup).await;
                 remove_channel(access, session.consultation_call_id);
                 display_conference_prompt(
@@ -1275,18 +1260,11 @@ pub(super) async fn execute_conference_merge(
             return;
         }
     }
-    let (committed, announcement) = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return (false, None);
-        }
-        let committed = controller.conference_merged(session.consultation_handset_call_id);
-        let announcement = committed.then(|| {
-            controller
-                .conference_announcement_effects(session.id, ConferenceAnnouncement::Connected)
-        });
-        controller.complete_conference_mutation(mutation);
-        (committed, announcement)
-    });
+    let (committed, announcement) = access
+        .shared
+        .controller
+        .commit_reserved_conference(mutation, session.consultation_handset_call_id, session.id)
+        .unwrap_or_else(|_| (false, None));
     if !committed {
         return;
     }
@@ -1331,18 +1309,16 @@ pub(super) async fn execute_selected_conference_merge(
                 LogLevel::Warning,
                 &format!("selected-call conference merge failed: {error}"),
             );
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return Vec::new();
-                }
-                let cleanup = controller.abort_join_conference(
+            let cleanup = access
+                .shared
+                .controller
+                .abort_reserved_join(
+                    mutation,
                     session.original_handset_call_id,
                     bridge_created,
-                    &resumed_call_ids,
-                );
-                controller.complete_conference_mutation(mutation);
-                cleanup
-            });
+                    resumed_call_ids.clone(),
+                )
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             display_conference_prompt(
                 access,
@@ -1361,18 +1337,11 @@ pub(super) async fn execute_selected_conference_merge(
             return;
         }
     }
-    let (committed, announcement) = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return (false, None);
-        }
-        let committed = controller.conference_merged(session.original_handset_call_id);
-        let announcement = committed.then(|| {
-            controller
-                .conference_announcement_effects(session.id, ConferenceAnnouncement::Connected)
-        });
-        controller.complete_conference_mutation(mutation);
-        (committed, announcement)
-    });
+    let (committed, announcement) = access
+        .shared
+        .controller
+        .commit_reserved_conference(mutation, session.original_handset_call_id, session.id)
+        .unwrap_or_else(|_| (false, None));
     if !committed {
         return;
     }
@@ -1413,19 +1382,17 @@ pub(super) async fn execute_conference_invite_merge(
                 LogLevel::Warning,
                 &format!("conference participant merge failed: {error}"),
             );
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return Vec::new();
-                }
-                let cleanup = controller.abort_conference_invite(
+            let cleanup = access
+                .shared
+                .controller
+                .abort_reserved_conference_invite(
+                    mutation,
                     invite_call_id,
                     true,
                     !moderator_resumed,
                     true,
-                );
-                controller.complete_conference_mutation(mutation);
-                cleanup
-            });
+                )
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             remove_channel(access, invite_pbx_id);
             display_conference_prompt(
@@ -1443,20 +1410,16 @@ pub(super) async fn execute_conference_invite_merge(
             return;
         }
     }
-    let (committed, announcement) = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return (false, None);
-        }
-        let committed = controller.conference_invite_merged(invite_call_id);
-        let announcement = committed.then(|| {
-            controller.conference_announcement_effects(
-                session.id,
-                ConferenceAnnouncement::ParticipantJoined(invite.participant.id),
-            )
-        });
-        controller.complete_conference_mutation(mutation);
-        (committed, announcement)
-    });
+    let (committed, announcement) = access
+        .shared
+        .controller
+        .commit_reserved_conference_invite(
+            mutation,
+            invite_call_id,
+            session.id,
+            invite.participant.id,
+        )
+        .unwrap_or_else(|_| (false, None));
     if !committed {
         return;
     }

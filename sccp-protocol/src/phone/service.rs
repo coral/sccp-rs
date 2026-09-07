@@ -46,7 +46,7 @@ pub enum PhoneServiceMessageKind {
 
 /// Identifiers copied from the SCCP application envelope rather than inferred
 /// from the submitted payload.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PhoneServiceRouting {
     pub application_id: ApplicationId,
     pub line_instance: LineInstance,

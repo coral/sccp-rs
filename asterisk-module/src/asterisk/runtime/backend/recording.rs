@@ -1,8 +1,8 @@
 //! Recording provider, anchor ownership, and session translation.
 
 use super::{
-    Access, AsteriskChannel, AsteriskRecording, DirectMediaCall, MediaAnchorReason, MutexExt as _,
-    NonNull, PbxCallId, RecordingCallback, RecordingDirection, RecordingError, RecordingProvider,
+    Access, AsteriskChannel, AsteriskRecording, DirectMediaCall, MediaAnchorReason, NonNull,
+    PbxCallId, RecordingCallback, RecordingDirection, RecordingError, RecordingProvider,
     RecordingSession, RecordingSessionControl, RecordingState, RecordingTarget, direct_media_call,
     with_channel,
 };
@@ -39,26 +39,24 @@ impl PendingRecordingAnchor {
     pub(in super::super) fn acquire(
         access: &Access,
         call_id: PbxCallId,
-        mutation: &MediaAnchorMutation<'_>,
+        mutation: &MediaAnchorMutation,
     ) -> Result<Self, AsteriskRecordingServiceError> {
         with_channel(access, call_id, |channel| {
             let channel = NonNull::new(channel)
                 .ok_or(AsteriskRecordingServiceError::CallUnavailable(call_id))?;
             let retarget_call = direct_media_call(access, channel.as_ptr());
-            if let Some(call) = &retarget_call {
-                access
-                    .shared
-                    .media_anchor_restores
-                    .lock_unpoisoned()
-                    .remember(call_id, call.clone());
-            }
             Ok(Self {
-                lease: MediaAnchorLease::acquire(
-                    &access.shared,
-                    call_id,
-                    MediaAnchorReason::Recording,
-                    mutation,
-                ),
+                lease: access
+                    .shared
+                    .media_runtime
+                    .acquire(
+                        &mutation._reservation,
+                        access,
+                        call_id,
+                        MediaAnchorReason::Recording,
+                        retarget_call.clone(),
+                    )
+                    .ok_or(AsteriskRecordingServiceError::CallUnavailable(call_id))?,
                 retarget_call,
             })
         })
@@ -76,16 +74,7 @@ impl PendingRecordingAnchor {
 
 impl ConfirmedRecordingAnchor {
     pub(in super::super) fn restore_call(&self) -> Option<DirectMediaCall> {
-        if !self.lease.is_last() {
-            return None;
-        }
-        self.lease
-            .shared
-            .upgrade()?
-            .media_anchor_restores
-            .lock_unpoisoned()
-            .get(self.lease.call_id)
-            .cloned()
+        self.lease.restore_call()
     }
 
     pub(in super::super) fn release(&mut self) {

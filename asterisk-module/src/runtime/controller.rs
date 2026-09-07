@@ -21,7 +21,7 @@
 //! parked, shared, or conference-owned call.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -65,8 +65,33 @@ use crate::runtime::backend::{
     ParkingOperation, PbxBridgeId, PbxEffect, PickupOperation,
 };
 
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) mod codec_mutation;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+mod completion;
 mod domains;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+mod forwarding;
 mod invariants;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+mod mobility;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+mod operations;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) mod ownership;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) mod parking;
+mod queries;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+mod records;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) use mobility::MobilityPrompt;
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) use operations::HoldPlan;
+
+queries::controller_queries!(Controller);
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+queries::controller_queries!(ControllerSnapshot);
 
 /// Identity of one handset presentation of a PBX call.
 ///
@@ -969,6 +994,7 @@ pub(crate) struct RemoteHangupToken(u64);
 #[derive(Clone, Debug)]
 #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 struct PendingRemoteHangup {
+    deferred: bool,
     token: RemoteHangupToken,
     device_id: DeviceId,
     call_id: CallId,
@@ -1123,7 +1149,60 @@ impl RegisteredDevice {
     }
 }
 
+/// An immutable, internally coherent view published after an owner transition.
+/// Query registries are private; snapshots cannot execute or commit mutations.
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) struct ControllerSnapshot {
+    parking: parking::ParkingRuntime,
+    mobility: mobility::MobilitySnapshot,
+    forwarding_entries: crate::call::forwarding::ForwardingEntryRegistry,
+    call_runtime: HashMap<PbxCallId, records::CallRuntimeRecord>,
+    devices: HashMap<DeviceId, RegisteredDevice>,
+    features: HashMap<DeviceId, DeviceFeatureState>,
+    call_registry: CallRegistry,
+    barges: BargeRegistry,
+    conferences: ConferenceRegistry,
+    conference_mutations: HashMap<ConferenceMutationOwner, u64>,
+    transfers: TransferRegistry,
+    voicemail: VoicemailRegistry,
+}
+
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+impl Controller {
+    fn snapshot(&self) -> ControllerSnapshot {
+        ControllerSnapshot {
+            parking: self.parking.clone(),
+            mobility: self.mobility_snapshot(),
+            forwarding_entries: self.forwarding_entries.clone(),
+            call_runtime: self.call_runtime.clone(),
+            devices: self.devices.clone(),
+            features: self.features.clone(),
+            call_registry: self.call_registry.clone(),
+            barges: self.barges.clone(),
+            conferences: self.conferences.clone(),
+            conference_mutations: self.conference_mutations.clone(),
+            transfers: self.transfers.clone(),
+            voicemail: self.voicemail.clone(),
+        }
+    }
+}
+
 pub struct Controller {
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    parking: parking::ParkingRuntime,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    mobility: crate::call::mobility::MobilityRegistry,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    mobility_prompts:
+        HashMap<(DeviceId, sccp_protocol::TransactionId), crate::call::mobility::MobilitySlot>,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    next_mobility_prompt: u32,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    forwarding_entries: crate::call::forwarding::ForwardingEntryRegistry,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    call_runtime: HashMap<PbxCallId, records::CallRuntimeRecord>,
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    no_answer_timers: crate::call::forwarding::NoAnswerTimerRegistry,
     next_pbx_id: u64,
     next_appearance_id: u64,
     next_bridge_id: u64,
@@ -1168,18 +1247,6 @@ pub struct Controller {
     transfers: TransferRegistry,
     voicemail: VoicemailRegistry,
     redirect_claims: HashSet<PbxCallId>,
-}
-
-/// Runs one pure controller transition and drops the mutex guard before
-/// returning its owned result to adapter code. Adapter I/O belongs after this
-/// function returns.
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-pub(crate) fn controller_step<T>(
-    controller: &Mutex<Controller>,
-    step: impl FnOnce(&mut Controller) -> T,
-) -> T {
-    let mut controller = controller.lock().expect("SCCP controller lock poisoned");
-    step(&mut controller)
 }
 
 impl Controller {
@@ -1387,10 +1454,6 @@ impl Controller {
         actions
     }
 
-    pub fn is_registered(&self, device: &DeviceId) -> bool {
-        self.devices.contains_key(device)
-    }
-
     pub fn set_privacy(&mut self, device: &DeviceId, enabled: bool) {
         self.feature_state_mut(device).privacy = enabled;
     }
@@ -1401,50 +1464,6 @@ impl Controller {
         };
         state.selected_line = Some(line_instance);
         true
-    }
-
-    /// Resolve a hook flash against the exact active handset identity without
-    /// mutating call state. A waiting inbound call takes precedence over
-    /// starting a consultation transfer; existing transfer consultations use
-    /// the same action so a second flash can complete that transaction.
-    pub fn hook_flash_action(&self, device_id: &DeviceId, call_id: CallId) -> HookFlashAction {
-        let Some(device) = self.devices.get(device_id) else {
-            return HookFlashAction::Ignore;
-        };
-        if device.active_call != Some(call_id) {
-            return HookFlashAction::Ignore;
-        }
-        if let Some(transfer) = self.transfers.get(device_id) {
-            return if transfer
-                .consultation
-                .is_some_and(|leg| leg.handset_call_id == call_id)
-            {
-                HookFlashAction::Transfer
-            } else {
-                HookFlashAction::Ignore
-            };
-        }
-        let Some(active) = self.appearance_for_call(call_id) else {
-            return HookFlashAction::Ignore;
-        };
-        if active.state != CallState::Connected
-            || self.conferences.by_pbx.contains_key(&active.pbx_id)
-            || self.barges.by_handset.contains_key(&call_id)
-        {
-            return HookFlashAction::Ignore;
-        }
-        let mut waiting = self
-            .appearances_for_device(device_id)
-            .filter(|appearance| {
-                appearance.sccp_id != call_id && appearance.state == CallState::Ringing
-            })
-            .map(|appearance| appearance.sccp_id)
-            .collect::<Vec<_>>();
-        waiting.sort_by_key(|waiting_call_id| waiting_call_id.0);
-        waiting
-            .first()
-            .copied()
-            .map_or(HookFlashAction::Transfer, HookFlashAction::AnswerWaiting)
     }
 
     #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
@@ -1657,19 +1676,6 @@ impl Controller {
             call.outbound_identity_stage = OutboundIdentityStage::Ready;
         }
         self.publish_outbound_ring_out(pbx_id)
-    }
-
-    pub fn inbound_offers_for_pbx(&self, pbx_id: PbxCallId) -> Vec<InboundOffer> {
-        self.call_registry
-            .pbx
-            .get(&pbx_id)
-            .filter(|call| call.direction == CallDirection::Inbound)
-            .into_iter()
-            .flat_map(|call| call.appearance_ids.iter())
-            .filter_map(|appearance_id| self.call_registry.appearances.get(appearance_id))
-            .filter(|appearance| appearance.state == CallState::Ringing)
-            .map(|appearance| self.inbound_offer_for_appearance(appearance))
-            .collect()
     }
 
     fn inbound_offer(&self, candidate: &InboundAppearance) -> InboundOffer {
@@ -1898,6 +1904,79 @@ fn digit_character(digit: Digit) -> Option<char> {
         Digit::C => Some('C'),
         Digit::D => Some('D'),
         Digit::Unknown(_) => None,
+    }
+}
+
+impl Controller {
+    pub fn barge_session(&self, call_id: CallId) -> Option<&BargeSession> {
+        self.barges.by_handset.get(&call_id)
+    }
+
+    pub fn call_device_id(&self, call_id: CallId) -> Option<&DeviceId> {
+        self.appearance_for_call(call_id)
+            .map(|appearance| &appearance.device_id)
+    }
+
+    pub fn confirm_conference_invite(
+        &self,
+        invite_call_id: CallId,
+    ) -> Result<Vec<DriverEffect>, ConferenceRejection> {
+        let session = self
+            .conference_session(invite_call_id)
+            .ok_or(ConferenceRejection::Unavailable)?;
+        let invite = session
+            .pending_invite
+            .as_ref()
+            .filter(|invite| invite.participant.handset_call_id == invite_call_id)
+            .ok_or(ConferenceRejection::Conflict)?;
+        let moderator = session
+            .participants
+            .get(invite.moderator_id)
+            .filter(|moderator| {
+                moderator.moderator && moderator.pbx_call_id == invite.moderator_call_id
+            })
+            .ok_or(ConferenceRejection::Unavailable)?;
+        if self
+            .call_registry
+            .pbx
+            .get(&invite.participant.pbx_call_id)
+            .is_none_or(|call| call.state != CallState::Connected)
+            || self
+                .call_registry
+                .pbx
+                .get(&moderator.pbx_call_id)
+                .is_none_or(|call| call.state != CallState::Held)
+        {
+            return Err(ConferenceRejection::NotConnected);
+        }
+        let mut effects = if invite.music_started {
+            Controller::conference_music_effects(session, false)
+        } else {
+            Vec::new()
+        };
+        effects.extend([
+            PbxEffect::Resume {
+                call_id: moderator.pbx_call_id,
+            }
+            .into(),
+            PbxEffect::Bridge {
+                operation: crate::runtime::backend::BridgeOperation::MergeParticipant {
+                    bridge_id: session.bridge_id,
+                    call_id: invite.participant.pbx_call_id,
+                },
+            }
+            .into(),
+        ]);
+        effects.extend(Controller::conference_mute_on_entry_effects(
+            session,
+            std::iter::once(&invite.participant),
+        ));
+        Ok(effects)
+    }
+
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn has_auto_answer_request(&self, pbx_id: PbxCallId) -> bool {
+        self.auto_answer_requests.contains_key(&pbx_id)
     }
 }
 

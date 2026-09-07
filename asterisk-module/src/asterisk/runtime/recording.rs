@@ -128,6 +128,29 @@ impl RecordingSessionControl for RuntimeRecordingSession {
 }
 
 impl RuntimeRecordings {
+    pub(super) fn extract_calls(&mut self, call_ids: &HashSet<PbxCallId>) -> Self {
+        let mut extracted = Self::default();
+        for (call_id, session) in self
+            .sessions
+            .extract_if(|call_id, _| call_ids.contains(&call_id))
+        {
+            let _ = extracted.sessions.insert(call_id, session);
+        }
+        for call_id in call_ids {
+            if self.automatic_attempts.remove(call_id) {
+                extracted.automatic_attempts.insert(*call_id);
+            }
+        }
+        extracted
+    }
+
+    pub(super) fn return_sessions(&mut self, mut completed: Self) {
+        for (call_id, session) in completed.sessions.extract_if(|_, _| true) {
+            let _ = self.sessions.insert(call_id, session);
+        }
+        self.automatic_attempts.extend(completed.automatic_attempts);
+    }
+
     pub(in super::super) fn is_active_call(&self, pbx_id: PbxCallId) -> bool {
         self.sessions
             .get(pbx_id)

@@ -38,48 +38,44 @@ fn provisional_recording_start_is_stopped_until_session_ownership_commits() {
 #[test]
 fn deferred_anchor_completion_is_registry_owned_and_shutdown_drained() {
     let backend = source("src/asterisk/runtime/backend.rs");
-    let defer = function_body(
-        &backend,
-        "fn defer_conference_announcement_completion(",
-        "fn finish_conference_announcement(",
+    let owner = source("src/runtime/media_ownership.rs");
+    let state = rust_item(&owner, "struct MediaOwner");
+    assert!(state.contains("anchors: MediaAnchorRegistry"));
+    assert!(state.contains("restores: MediaAnchorRestores<C>"));
+    assert!(
+        state.contains("announcements: HashMap<ConferenceId, ActiveConferenceAnnouncement<E, C>>")
     );
-    assert!(defer.contains("announcement_generation_is_current"));
-    assert!(defer.contains("active.completion.take()"));
-    assert!(defer.contains("completion.abort()"));
-    assert!(defer.contains("active.completion = Some("));
-
-    let complete = function_body(
-        &backend,
-        "pub fn complete_conference_announcement(",
-        "fn complete_conference_announcement_locked(",
-    );
-    assert!(complete.contains("MediaAnchorMutation::try_acquire"));
-    assert!(complete.contains("defer_conference_announcement_completion("));
-    assert!(!complete.contains(".spawn("));
-
-    let cancel = function_body(
-        &backend,
-        "pub fn cancel_conference_announcement(",
-        "fn cancel_conference_announcement_locked(",
-    );
-    assert!(cancel.contains("defer_conference_announcement_completion("));
-    assert!(!cancel.contains(".spawn("));
-
-    let shutdown = function_body(
-        &backend,
-        "pub async fn shutdown_conferences(",
-        "pub async fn shutdown_remote_hangups(",
-    );
-    let mutation = shutdown
-        .find("MediaAnchorMutation::acquire(access).await")
-        .unwrap();
-    let cancel = shutdown
-        .find("cancel_conference_announcement_locked")
-        .unwrap();
-    let drain = shutdown
-        .find("drain_conference_announcement_restores")
-        .unwrap();
-    assert!(mutation < cancel && cancel < drain);
+    assert!(!state.contains("Mutex<MediaAnchor"));
+    let run = rust_item(&owner, "async fn run");
+    assert!(run.contains("workers.join_next()"));
+    let dispatch = rust_item(&owner, "fn dispatch_due");
+    assert!(dispatch.contains("workers.spawn_blocking"));
+    let completion = rust_item(&owner, "fn complete");
+    assert!(completion.contains("active.generation == generation"));
+    let lease_drop = rust_item(&owner, "impl Drop for AnchorLease");
+    assert!(lease_drop.contains("ReleaseAnchor"));
+    assert!(!lease_drop.contains("spawn"));
+    assert!(!lease_drop.contains("try_send"));
+    let reservation = rust_item(&owner, "struct MediaReservation");
+    assert!(reservation.contains("MailboxReservation<MediaCommand<E, C>>"));
+    assert!(!backend.contains("media_anchor_mutations"));
+    assert!(!backend.contains("conference_announcement_mutations"));
+    let complete = rust_item(&backend, "pub fn complete_conference_announcement");
+    assert!(complete.contains("MediaAnchorMutation::try_conference"));
+    assert!(!complete.contains("spawn"));
+    let shutdown = rust_item(&backend, "pub async fn shutdown_conferences");
+    assert!(shutdown.contains_in_order(&[
+        "MediaAnchorMutation::conference",
+        "take_announcement",
+        "finish_conference_announcement"
+    ]));
+    let bridges = source("src/asterisk/runtime/bridge_owner.rs");
+    let bridge_state = rust_item(&bridges, "struct BridgeState");
+    assert!(bridge_state.contains("bridges: HashMap<PbxBridgeId, BridgeSession>"));
+    assert!(!bridge_state.contains("Mutex"));
+    assert!(bridges.contains("workers.spawn_blocking"));
+    assert!(bridges.contains("BridgeResource::Call"));
+    assert!(bridges.contains("BridgeResource::Bridge"));
 
     let channel = source("src/asterisk/runtime/channel.rs");
     let remove = function_body(
@@ -87,26 +83,28 @@ fn deferred_anchor_completion_is_registry_owned_and_shutdown_drained() {
         "pub fn remove_channel(",
         "pub fn with_channel<T>(",
     );
-    assert!(remove.contains("media_anchors"));
-    assert!(remove.contains("media_anchor_restores"));
+    assert!(remove.contains("media_runtime"));
     assert!(remove.contains("remove_call(pbx_id)"));
 
     let lifecycle = source("src/asterisk/runtime/lifecycle.rs");
     let stop = function_body(&lifecycle, "pub fn stop(mut self)", "impl Access");
-    let abort_events = stop.find("self.event_task.abort()").unwrap();
-    let join_events = stop.find("&mut self.event_task").unwrap();
+    let close_events = stop.find("self.event_shutdown.take()").unwrap();
+    assert!(!stop.contains("self.event_task.abort()"));
+    let ordinary_drained = stop.find("drained.await").unwrap();
     let drain_conferences = stop
         .find("shutdown_conferences(&self.access).await")
         .unwrap();
-    assert!(abort_events < join_events && join_events < drain_conferences);
+    let finish_events = stop.find("self.finish_event_shutdown.take()").unwrap();
+    let join_events = stop
+        .find("tokio::join!(phone.shutdown(), self.event_task)")
+        .unwrap();
+    assert!(close_events < ordinary_drained && ordinary_drained < drain_conferences);
+    assert!(drain_conferences < finish_events && finish_events < join_events);
 
     let services = source("src/asterisk/runtime/services.rs");
-    let run_events = function_body(
-        &services,
-        "pub async fn run_events(",
-        "pub async fn run_call_signals(",
-    );
-    assert!(run_events.contains("let mut recording_sessions = RuntimeRecordings::default()"));
+    let event_state = rust_item(&services, "struct RuntimeEventState");
+    assert!(event_state.contains("recording_sessions: RuntimeRecordings"));
+    assert!(!event_state.contains("Mutex"));
 
     let recording_backend = source("src/asterisk/runtime/backend/recording.rs");
     let session = function_body(
@@ -447,7 +445,9 @@ fn native_hangup_retires_the_binding_until_serialized_cleanup() {
     assert!(execute.contains("discard_stale_media_effect"));
 
     let services = source("src/asterisk/runtime/services.rs");
-    let cleanup = rust_item(&services, "pub async fn handle_runtime_hangup_signal");
+    let preparation = rust_item(&services, "async fn prepare_runtime_hangup");
+    assert!(!preparation.contains("remove_channel"));
+    let cleanup = rust_item(&services, "async fn execute_prepared_runtime_hangup");
     assert!(cleanup.contains("remove_channel(access, pbx_id)"));
 }
 

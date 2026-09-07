@@ -2,8 +2,8 @@
 
 use super::{
     Access, AmiParkingCommand, CallId, DeviceId, Instant, PARKING_CONFIRM_TIMEOUT,
-    ParkingRejection, PendingPark, ServiceOutcome, ServiceProviderError, begin_parking_retrieval,
-    controller_step, execute_service_effects,
+    ParkingRejection, ServiceOutcome, ServiceProviderError, begin_parking_retrieval,
+    execute_service_effects,
 };
 
 pub fn parking_service_error(error: ParkingRejection) -> ServiceProviderError {
@@ -27,18 +27,23 @@ pub async fn parking_service_operation(
     if !access.config().devices.contains_key(&device_id) {
         return Err(ServiceProviderError::DeviceNotFound);
     }
-    if !controller_step(&access.shared.controller, |controller| {
-        controller.is_registered(&device_id)
-    }) {
+    if !access
+        .shared
+        .controller
+        .snapshot()
+        .is_registered(&device_id)
+    {
         return Err(ServiceProviderError::DeviceNotRegistered);
     }
     match command {
         AmiParkingCommand::Park => {
             let call_id = call_id.ok_or(ServiceProviderError::CallNotFound)?;
-            let call = controller_step(&access.shared.controller, |controller| {
-                controller.call(call_id)
-            })
-            .ok_or(ServiceProviderError::CallNotFound)?;
+            let call = access
+                .shared
+                .controller
+                .snapshot()
+                .call(call_id)
+                .ok_or(ServiceProviderError::CallNotFound)?;
             if call.device_id != device_id {
                 return Err(ServiceProviderError::CallOwnership);
             }
@@ -55,27 +60,23 @@ pub async fn parking_service_operation(
                 });
             let lot = requested_lot.or(line_lot);
             drop(config);
-            let result = controller_step(&access.shared.controller, |controller| {
-                let pbx_id = controller.call_pbx_id(call_id);
-                (pbx_id, controller.park(call_id, enabled, lot.clone()))
-            });
-            let pbx_id = result.0.ok_or(ServiceProviderError::CallNotFound)?;
-            let effects = result.1.map_err(parking_service_error)?;
-            access
+            let result = access
                 .shared
-                .pending_parks
-                .lock()
-                .map_err(|_| ServiceProviderError::Unavailable)?
-                .insert(
+                .controller
+                .prepare_parking(
                     call_id,
-                    PendingPark {
-                        pbx_id,
-                        device_id: device_id.clone(),
-                        requested_lot: lot.clone(),
-                        parkee_unique_id: None,
-                        deadline: Instant::now() + PARKING_CONFIRM_TIMEOUT,
-                    },
-                );
+                    enabled,
+                    lot.clone(),
+                    Instant::now() + PARKING_CONFIRM_TIMEOUT,
+                )
+                .unwrap_or_else(|_| {
+                    (
+                        None,
+                        Err(crate::runtime::controller::ParkingRejection::Unavailable),
+                    )
+                });
+            let _pbx_id = result.0.ok_or(ServiceProviderError::CallNotFound)?;
+            let effects = result.1.map_err(parking_service_error)?;
             execute_service_effects(access, effects).await?;
             Ok(ServiceOutcome::Parking {
                 command,
@@ -89,11 +90,12 @@ pub async fn parking_service_operation(
             let slot = slot.ok_or(ServiceProviderError::ParkingNotFound)?;
             let config = access.config();
             let selected_line = line_instance.or_else(|| {
-                controller_step(&access.shared.controller, |controller| {
-                    controller
-                        .registered_device(&device_id)
-                        .and_then(|device| device.selected_line)
-                })
+                access
+                    .shared
+                    .controller
+                    .snapshot()
+                    .registered_device(&device_id)
+                    .and_then(|device| device.selected_line)
             });
             let binding = selected_line
                 .and_then(|line| access.line_binding(&device_id, line))

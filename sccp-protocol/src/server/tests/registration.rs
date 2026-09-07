@@ -3841,3 +3841,37 @@ async fn registered_location_information_routes_typed_or_opaque_without_leaking_
     handle.shutdown().await.unwrap();
     task.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn shutdown_joins_unregistered_station_streams_before_returning() {
+    let (server, handle, _events, ingress) =
+        Server::with_ingress(ServerConfig::default(), [definition()]).unwrap();
+    let (observed, mut observations) = mpsc::channel(8);
+    let task = tokio::spawn(server.with_observation_sender(observed).run());
+    let (station, mut peer) = tokio::io::duplex(128);
+    ingress
+        .accept(
+            station,
+            SocketAddr::from(([192, 0, 2, 1], 40_000)),
+            SocketAddr::from(([192, 0, 2, 2], 2_000)),
+            StationTransport::Clear,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        observations.recv().await.unwrap().kind,
+        ServerObservationKind::Connected { .. }
+    ));
+    handle.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let mut byte = [0];
+    assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+    assert_eq!(
+        observed_disconnect_reason(&mut observations, 1).await,
+        StationDisconnectReason::ServerRetirement
+    );
+}

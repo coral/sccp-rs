@@ -4,13 +4,13 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sccp_protocol::{ServerObservation, ServerObservationKind};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Handle;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -32,7 +32,6 @@ const OBSERVATION_QUEUE_ITEMS: usize = 1024;
 const REPORT_QUEUE_ITEMS: usize = 16;
 const RECENT_LOG_ITEMS: usize = 128;
 const MAX_LOG_MESSAGE_BYTES: usize = 8 * 1024;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 static ACTIVE_LOGGER: OnceLock<Mutex<Option<ActiveLogger>>> = OnceLock::new();
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -73,6 +72,7 @@ impl LogEntry {
 
 pub(super) struct TelemetryReporter {
     generation: u64,
+    shutdown: watch::Sender<bool>,
     log_sender: Option<mpsc::Sender<LogEntry>>,
     observation_sender: Option<mpsc::Sender<ServerObservation>>,
     collector_task: Option<JoinHandle<()>>,
@@ -92,19 +92,25 @@ impl TelemetryReporter {
         let (observation_sender, observation_receiver) = mpsc::channel(OBSERVATION_QUEUE_ITEMS);
         let (report_sender, report_receiver) = mpsc::channel(REPORT_QUEUE_ITEMS);
         register_logger(generation, log_sender.clone());
-        let collector_task = handle.spawn(collect(
-            log_receiver,
-            observation_receiver,
-            report_sender,
-            shared,
-        ));
-        let uploader_task = handle.spawn(transport::upload(
-            report_receiver,
-            env!("CARGO_PKG_VERSION"),
-            host_hash,
-        ));
+        let (shutdown, mut collector_stop) = watch::channel(false);
+        let mut uploader_stop = collector_stop.clone();
+        let collector_task = handle.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = collector_stop.changed() => {},
+                _ = collect(log_receiver, observation_receiver, report_sender, shared) => {},
+            }
+        });
+        let uploader_task = handle.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = uploader_stop.changed() => {},
+                _ = transport::upload(report_receiver, env!("CARGO_PKG_VERSION"), host_hash) => {},
+            }
+        });
         Some(Self {
             generation,
+            shutdown,
             log_sender: Some(log_sender),
             observation_sender: Some(observation_sender),
             collector_task: Some(collector_task),
@@ -120,21 +126,16 @@ impl TelemetryReporter {
         unregister_logger(self.generation);
         self.log_sender.take();
         self.observation_sender.take();
-        let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
-        finish_task(&mut self.collector_task, deadline).await;
-        finish_task(&mut self.uploader_task, deadline).await;
+        self.shutdown.send_replace(true);
+        finish_task(&mut self.collector_task).await;
+        finish_task(&mut self.uploader_task).await;
     }
 }
 
 impl Drop for TelemetryReporter {
     fn drop(&mut self) {
         unregister_logger(self.generation);
-        if let Some(task) = &self.collector_task {
-            task.abort();
-        }
-        if let Some(task) = &self.uploader_task {
-            task.abort();
-        }
+        self.shutdown.send_replace(true);
     }
 }
 
@@ -255,17 +256,10 @@ fn retain_log(logs: &mut VecDeque<LogEntry>, log: LogEntry) {
     logs.push_back(log);
 }
 
-async fn finish_task(task: &mut Option<JoinHandle<()>>, deadline: tokio::time::Instant) {
-    let Some(handle) = task.as_mut() else {
-        return;
-    };
-    if tokio::time::timeout_at(deadline, &mut *handle)
-        .await
-        .is_err()
-    {
-        handle.abort();
+async fn finish_task(task: &mut Option<JoinHandle<()>>) {
+    if let Some(handle) = task.take() {
+        let _ = handle.await;
     }
-    task.take();
 }
 
 fn register_logger(generation: u64, sender: mpsc::Sender<LogEntry>) {

@@ -1,43 +1,40 @@
 use super::media::admit_clear_audio_media;
 use super::media::{retarget_to_anchor, retarget_to_direct};
 use super::{
-    AbortHandle, Access, AmiEventError, AnnouncementAdapter, AnnouncementCall,
-    AnnouncementFailureStage, AnnouncementGeneration, Arc, AsteriskCallFeatures, AsteriskChannel,
-    AsteriskChannelMetadata, AsteriskDatabase, AsteriskHints, AsteriskPartyUpdates, BargeOperation,
-    BridgeOperation, CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, CallFeatureError,
-    CallFeatureProvider, CallId, CallMetadata, CallTransition, CallTransitionProgress,
-    ChannelAllocationError, ChannelAvailability, ChannelMetadataError, Codec,
-    ConferenceAnnouncement, ConferenceAnnouncementOperation, ConferenceId,
-    ConferenceTaskCancellation, ControlProviderError, DeviceId, DirectMediaCall, DriverEffect,
-    Duration, EffectExecutionError, HandsetEffect, HashSet, Instant, LogLevel,
-    MAX_RESTORE_ATTEMPTS, MediaAnchorReason, MediaEndpoint, MutexExt, NonNull,
-    PARKING_NOTIFICATION_TIME, ParkingOperation, PartyUpdateError, PbxBackendError, PbxBridgeId,
-    PbxCallId, PbxEffect, PbxServiceCapabilities, PendingParkingNotification, PhoneCallState,
-    PhoneCommand, PhoneCommandAction, PickupOperation, ReceiveChannelPurpose, RecordingError,
-    RecordingTarget, RedirectReasonCode, RedirectingUpdate, RemoteHangupPlan,
-    RuntimeCallSignalDeliveryError, RuntimeCallSignalDeliveryResult, Shared, Weak,
-    allocate_announcement_generation, announcement_generation_is_current, ast_log, audio_framing,
+    Access, AmiEventError, AnnouncementAdapter, AnnouncementCall, AnnouncementFailureStage,
+    AnnouncementGeneration, Arc, AsteriskCallFeatures, AsteriskChannel, AsteriskChannelMetadata,
+    AsteriskDatabase, AsteriskHints, AsteriskPartyUpdates, BargeOperation, BridgeOperation,
+    CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, CallFeatureError, CallFeatureProvider, CallId,
+    CallMetadata, CallTransition, CallTransitionProgress, ChannelAllocationError,
+    ChannelAvailability, ChannelMetadataError, Codec, ConferenceAnnouncement,
+    ConferenceAnnouncementOperation, ConferenceId, ConferenceTaskCancellation,
+    ControlProviderError, DeviceId, DirectMediaCall, DriverEffect, Duration, EffectExecutionError,
+    HandsetEffect, HashSet, Instant, LogLevel, MAX_RESTORE_ATTEMPTS, MediaAnchorReason,
+    MediaEndpoint, MutexExt, NonNull, PARKING_NOTIFICATION_TIME, ParkingOperation,
+    PartyUpdateError, PbxBackendError, PbxBridgeId, PbxCallId, PbxEffect, PbxServiceCapabilities,
+    PhoneCallState, PhoneCommand, PhoneCommandAction, PickupOperation, ReceiveChannelPurpose,
+    RecordingError, RecordingTarget, RedirectReasonCode, RedirectingUpdate, RemoteHangupPlan,
+    RuntimeCallSignalDeliveryError, RuntimeCallSignalDeliveryResult, ast_log, audio_framing,
     c_string, cancel_no_answer_timer, channel_availability, configured_audio_processing,
-    configured_audio_traffic_class, configured_dtmf_mode, controller_step, direct_media_call,
+    configured_audio_traffic_class, configured_dtmf_mode, direct_media_call,
     execute_backend_cleanup_effects, handset_effect_call_id, local_media_endpoint,
     native_audio_format, native_bridging, native_channel, pbx_audio_format, publish_ami_event,
     publish_line, redirected_call_update, remove_channel, replacement_anchor_plan,
     restore_attempts_exhausted, restore_redirecting_update, show_conference_list,
-    start_announcement, take_pending_retrieval_by_pbx, validate_native_channel_metadata,
-    validate_redirecting_update, with_channel,
+    start_announcement, validate_native_channel_metadata, validate_redirecting_update,
+    with_channel,
 };
 use super::{
-    AsteriskRecording, BridgeBackend, CString, CallDirection, CallInfo, CallServiceBackend,
-    ChannelAllocationOwner, ChannelAllocationRequest, ChannelBackend, ChannelBinding,
-    ConferenceDestinationOperation, ConferenceTaskStartError, ForwardingOperation,
-    ForwardingRouteReason, IpAddr, IpAddressType, Ipv4Addr, LineBinding, LineInstance,
-    MANAGER_CONTROL_DELIVERY_TIMEOUT, ManagementBackend, ManagementEvent, MediaBackend,
-    MediaEndpointAddress, MultimediaReceiveDescriptor, MultimediaTransmitControl,
-    MultimediaTransmitDescriptor, NORMAL_CLEARING, PbxVideoFormat, PickupOutcome, ProtocolVersion,
-    RecordingCallback, RecordingDirection, RecordingProvider, RecordingSession,
-    RecordingSessionControl, RecordingState, SupplementaryBackend, TransferCompletion,
-    VoicemailOperation, allocate_channel, call_event, configured_video_traffic_class,
-    native_pickup_result, prepare_channel_allocation_text, ptr, with_channels, with_two_channels,
+    AsteriskRecording, BridgeBackend, CString, CallServiceBackend, ChannelAllocationOwner,
+    ChannelAllocationRequest, ChannelBackend, ConferenceDestinationOperation,
+    ConferenceTaskStartError, ForwardingOperation, ForwardingRouteReason, IpAddr, IpAddressType,
+    Ipv4Addr, LineBinding, LineInstance, MANAGER_CONTROL_DELIVERY_TIMEOUT, ManagementBackend,
+    ManagementEvent, MediaBackend, MediaEndpointAddress, MultimediaReceiveDescriptor,
+    MultimediaTransmitControl, MultimediaTransmitDescriptor, NORMAL_CLEARING, PbxVideoFormat,
+    PickupOutcome, ProtocolVersion, RecordingCallback, RecordingDirection, RecordingProvider,
+    RecordingSession, RecordingSessionControl, RecordingState, SupplementaryBackend,
+    TransferCompletion, VoicemailOperation, allocate_channel, call_event,
+    configured_video_traffic_class, native_pickup_result, prepare_channel_allocation_text, ptr,
 };
 use crate::media::encryption::LocalEncryptionCapabilities;
 use crate::runtime::backend::PbxBackend as _;
@@ -130,9 +127,11 @@ pub async fn execute_remote_hangup_plan(access: &Access, plan: RemoteHangupPlan)
     }
     if failed
         && let Some(token) = plan.pending
-        && let Some(effect) = controller_step(&access.shared.controller, |controller| {
-            controller.complete_remote_hangup_token(token)
-        })
+        && let Some(effect) = access
+            .shared
+            .controller
+            .complete_remote_hangup_token(token)
+            .unwrap_or_else(|_| None)
     {
         execute_cleanup_effects(access, vec![effect]).await;
     }
@@ -148,25 +147,29 @@ pub async fn execute_call_transition_result(
     access: &Access,
     transition: CallTransition,
 ) -> Result<bool, ControlProviderError> {
-    let line = controller_step(&access.shared.controller, |controller| {
-        controller
-            .active_or_primary_call_by_pbx(transition.target_pbx_id)
-            .map(|call| call.line)
-    });
+    let line = access
+        .shared
+        .controller
+        .snapshot()
+        .active_or_primary_call_by_pbx(transition.target_pbx_id)
+        .map(|call| call.line);
     let backend = AsteriskBackend::new(access);
     let mut progress = CallTransitionProgress::default();
     for (index, effect) in transition.effects.iter().cloned().enumerate() {
         match execute_one_effect(access, &backend, index, effect.clone()).await {
             Ok(()) => {
                 progress.record_success(&transition, &effect);
-                let recorded = controller_step(&access.shared.controller, |controller| {
-                    controller.record_call_transition_success(transition.id, &effect)
-                });
+                let recorded = access
+                    .shared
+                    .controller
+                    .record_call_transition_success(transition.id, &effect)
+                    .unwrap_or_else(|_| false);
                 if !recorded {
-                    let compensation = controller_step(&access.shared.controller, |controller| {
-                        controller
-                            .compensate_unrecorded_call_transition_effect(&transition, &effect)
-                    });
+                    let compensation = access
+                        .shared
+                        .controller
+                        .compensate_unrecorded_call_transition_effect(&transition, &effect)
+                        .unwrap_or_else(|_| Default::default());
                     execute_cleanup_effects(access, compensation.effects).await;
                     if compensation.remove_target_channel {
                         remove_channel(access, transition.target_pbx_id);
@@ -184,9 +187,11 @@ pub async fn execute_call_transition_result(
                     &format!("SCCP call transition failed: {error}"),
                 );
                 let remove_target_channel = transition.remove_target_channel_on_abort(&progress);
-                let cleanup = controller_step(&access.shared.controller, |controller| {
-                    controller.abort_call_transition(transition.id, &progress)
-                });
+                let cleanup = access
+                    .shared
+                    .controller
+                    .abort_call_transition(transition.id, &progress)
+                    .unwrap_or_else(|_| Vec::new());
                 execute_cleanup_effects(access, cleanup).await;
                 if remove_target_channel {
                     remove_channel(access, transition.target_pbx_id);
@@ -195,9 +200,11 @@ pub async fn execute_call_transition_result(
             }
         }
     }
-    let committed = controller_step(&access.shared.controller, |controller| {
-        controller.commit_call_transition(transition.id)
-    });
+    let committed = access
+        .shared
+        .controller
+        .commit_call_transition(transition.id)
+        .unwrap_or_else(|_| false);
     if committed && let Some(line) = line {
         publish_line(access, &line);
     }
@@ -237,9 +244,7 @@ pub async fn execute_one_effect(
             | HandsetEffect::BeginEarlyMedia { call_id, .. }
             | HandsetEffect::StartMedia { call_id, .. },
         ) => {
-            let pbx_id = controller_step(&access.shared.controller, |controller| {
-                controller.call_pbx_id(*call_id)
-            });
+            let pbx_id = access.shared.controller.snapshot().call_pbx_id(*call_id);
             pbx_id.is_none_or(|pbx_id| {
                 channel_availability(access, pbx_id) == ChannelAvailability::Retiring
             })
@@ -250,6 +255,63 @@ pub async fn execute_one_effect(
         return Ok(());
     }
     match effect {
+        DriverEffect::Backend(PbxEffect::PublishManagementEvent { event }) => {
+            access
+                .shared
+                .ami_events
+                .publish_confirmed(event.clone())
+                .await
+                .map_err(|error| EffectExecutionError::Backend {
+                    index,
+                    effect: Box::new(PbxEffect::PublishManagementEvent { event }),
+                    error: AsteriskBackendError::Management(error),
+                })?;
+        }
+        DriverEffect::Backend(PbxEffect::Transfer { operation }) => {
+            access
+                .shared
+                .bridge_runtime
+                .execute_async(
+                    access,
+                    super::bridge_owner::BridgeAction::Transfer(operation.clone()),
+                )
+                .await
+                .map_err(|error| EffectExecutionError::Backend {
+                    index,
+                    effect: Box::new(PbxEffect::Transfer { operation }),
+                    error,
+                })?;
+        }
+        DriverEffect::Backend(PbxEffect::Bridge { operation }) => {
+            access
+                .shared
+                .bridge_runtime
+                .execute_async(
+                    access,
+                    super::bridge_owner::BridgeAction::Bridge(operation.clone()),
+                )
+                .await
+                .map_err(|error| EffectExecutionError::Backend {
+                    index,
+                    effect: Box::new(PbxEffect::Bridge { operation }),
+                    error,
+                })?;
+        }
+        DriverEffect::Backend(PbxEffect::Barge { operation }) => {
+            access
+                .shared
+                .bridge_runtime
+                .execute_async(
+                    access,
+                    super::bridge_owner::BridgeAction::Barge(operation.clone()),
+                )
+                .await
+                .map_err(|error| EffectExecutionError::Backend {
+                    index,
+                    effect: Box::new(PbxEffect::Barge { operation }),
+                    error,
+                })?;
+        }
         DriverEffect::Backend(effect) => {
             let followup =
                 backend
@@ -297,14 +359,8 @@ pub struct AsteriskBackend<'a> {
     pub call_features: AsteriskCallFeatures,
 }
 
-pub struct ActiveConferenceAnnouncement {
-    generation: AnnouncementGeneration,
-    call_ids: Vec<PbxCallId>,
-    completion: Option<AbortHandle>,
-    anchors: Vec<MediaAnchorLease>,
-    direct_calls: Vec<DirectMediaCall>,
-    restore_attempts: u8,
-}
+pub type ActiveConferenceAnnouncement =
+    crate::runtime::media_ownership::ActiveConferenceAnnouncement<Access, DirectMediaCall>;
 
 impl AnnouncementCall for DirectMediaCall {
     fn call_id(&self) -> PbxCallId {
@@ -312,85 +368,47 @@ impl AnnouncementCall for DirectMediaCall {
     }
 }
 
-pub(super) struct MediaAnchorLease {
-    shared: Weak<Shared>,
-    call_id: PbxCallId,
-    reason: MediaAnchorReason,
-    active: bool,
+type MediaAnchorLease = super::media_owner::AnchorLease;
+
+pub(super) struct MediaAnchorMutation {
+    _reservation: super::media_owner::MediaReservation,
 }
 
-pub(super) struct MediaAnchorMutation<'a> {
-    _guard: tokio::sync::MutexGuard<'a, ()>,
-}
-
-impl<'a> MediaAnchorMutation<'a> {
-    pub(super) async fn acquire(access: &'a Access) -> Self {
-        Self {
-            _guard: access.shared.media_anchor_mutations.lock().await,
-        }
-    }
-
-    pub(super) fn try_acquire(access: &'a Access) -> Option<Self> {
+impl MediaAnchorMutation {
+    pub(super) async fn acquire(access: &Access, call_id: PbxCallId) -> Option<Self> {
         access
             .shared
-            .media_anchor_mutations
-            .try_lock()
-            .ok()
-            .map(|guard| Self { _guard: guard })
-    }
-}
-
-impl MediaAnchorLease {
-    fn acquire(
-        shared: &Arc<Shared>,
-        call_id: PbxCallId,
-        reason: MediaAnchorReason,
-        _mutation: &MediaAnchorMutation<'_>,
-    ) -> Self {
-        shared
-            .media_anchors
-            .lock_unpoisoned()
-            .acquire(call_id, reason);
-        Self {
-            shared: Arc::downgrade(shared),
-            call_id,
-            reason,
-            active: true,
-        }
-    }
-
-    fn release(&mut self) {
-        if !std::mem::replace(&mut self.active, false) {
-            return;
-        }
-        if let Some(shared) = self.shared.upgrade() {
-            let last = {
-                let mut anchors = shared.media_anchors.lock_unpoisoned();
-                anchors.release(self.call_id, self.reason) && !anchors.is_anchored(self.call_id)
-            };
-            if last {
-                shared
-                    .media_anchor_restores
-                    .lock_unpoisoned()
-                    .remove_call(self.call_id);
-            }
-        }
-    }
-
-    fn is_last(&self) -> bool {
-        self.active
-            && self.shared.upgrade().is_some_and(|shared| {
-                !shared
-                    .media_anchors
-                    .lock_unpoisoned()
-                    .is_anchored_for_other_reason(self.call_id, self.reason)
+            .media_runtime
+            .reserve(&[call_id], None)
+            .await
+            .map(|reservation| Self {
+                _reservation: reservation,
             })
     }
-}
 
-impl Drop for MediaAnchorLease {
-    fn drop(&mut self) {
-        self.release();
+    fn try_conference(
+        access: &Access,
+        conference_id: ConferenceId,
+        calls: &[PbxCallId],
+    ) -> Option<Self> {
+        access
+            .shared
+            .media_runtime
+            .try_reserve(calls, Some(conference_id))
+            .map(|reservation| Self {
+                _reservation: reservation,
+            })
+    }
+
+    async fn conference(access: &Access, conference_id: ConferenceId) -> Option<Self> {
+        access
+            .shared
+            .media_runtime
+            .reserve(&[], Some(conference_id))
+            .await
+            .map(|reservation| Self {
+                _reservation: reservation,
+            })
     }
 }
 
@@ -516,9 +534,11 @@ impl AsteriskBackend<'_> {
             failures.push("native channel metadata");
         }
         if !matches!(
-            controller_step(&self.access.shared.controller, |controller| {
-                controller.set_call_metadata(call_id, controller_metadata.clone())
-            }),
+            self.access
+                .shared
+                .controller
+                .set_call_metadata(call_id, controller_metadata.clone())
+                .unwrap_or_else(|_| Ok(false)),
             Ok(true)
         ) {
             failures.push("controller channel metadata");
@@ -560,13 +580,17 @@ impl AsteriskBackend<'_> {
         destination: &str,
         reason: RedirectReasonCode,
     ) -> Result<(), AsteriskBackendError> {
-        let controller_metadata = controller_step(&self.access.shared.controller, |controller| {
-            controller.call_metadata(call_id).cloned()
-        })
-        .ok_or(AsteriskBackendError::CallUnavailable {
-            operation: "snapshot redirect metadata",
-            call_id,
-        })?;
+        let controller_metadata = self
+            .access
+            .shared
+            .controller
+            .snapshot()
+            .call_metadata(call_id)
+            .cloned()
+            .ok_or(AsteriskBackendError::CallUnavailable {
+                operation: "snapshot redirect metadata",
+                call_id,
+            })?;
         let context = c_string(context).map_err(|source| AsteriskBackendError::NativeText {
             operation: "redirect call context",
             call_id,
@@ -633,9 +657,13 @@ impl AsteriskBackend<'_> {
                     cause,
                 ));
             }
-            match controller_step(&self.access.shared.controller, |controller| {
-                controller.set_call_metadata(call_id, updated_metadata.clone())
-            }) {
+            match self
+                .access
+                .shared
+                .controller
+                .set_call_metadata(call_id, updated_metadata.clone())
+                .unwrap_or_else(|_| Ok(false))
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     return Err(self.redirect_failure(
@@ -752,7 +780,7 @@ fn stop_conference_tones(access: &Access, call_ids: &[PbxCallId]) {
 fn restore_conference_media(
     access: &Access,
     calls: &[DirectMediaCall],
-    _mutation: &MediaAnchorMutation<'_>,
+    _mutation: &MediaAnchorMutation,
 ) -> Vec<PbxCallId> {
     calls
         .iter()
@@ -802,31 +830,10 @@ impl AnnouncementAdapter<DirectMediaCall> for AsteriskAnnouncementAdapter<'_> {
 
 fn schedule_conference_announcement_completion(
     access: &Access,
-    conference_id: ConferenceId,
-    generation: AnnouncementGeneration,
-) -> AbortHandle {
-    schedule_conference_announcement_completion_after(
-        access,
-        conference_id,
-        generation,
-        CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW,
-    )
-}
-
-fn schedule_conference_announcement_completion_after(
-    access: &Access,
-    conference_id: ConferenceId,
-    generation: AnnouncementGeneration,
-    delay: Duration,
-) -> AbortHandle {
-    let completion_access = access.clone();
-    access
-        .handle
-        .spawn(async move {
-            tokio::time::sleep(delay).await;
-            complete_conference_announcement(&completion_access, conference_id, generation);
-        })
-        .abort_handle()
+    _conference_id: ConferenceId,
+    _generation: AnnouncementGeneration,
+) -> super::media_owner::AnnouncementTimer {
+    super::media_owner::AnnouncementTimer::new(access, CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW)
 }
 
 fn defer_conference_announcement_completion(
@@ -834,49 +841,34 @@ fn defer_conference_announcement_completion(
     conference_id: ConferenceId,
     generation: AnnouncementGeneration,
 ) {
-    const RETRY_DELAY: Duration = Duration::from_millis(10);
-
-    let mut announcements = access.shared.conference_announcements.lock_unpoisoned();
-    let Some(active) = announcements.get_mut(&conference_id) else {
-        return;
-    };
-    if !announcement_generation_is_current(active.generation, generation) {
-        return;
-    }
-    if let Some(completion) = active.completion.take() {
-        completion.abort();
-    }
-    active.completion = Some(schedule_conference_announcement_completion_after(
-        access,
+    access.shared.media_runtime.defer(
         conference_id,
         generation,
-        RETRY_DELAY,
-    ));
+        super::media_owner::AnnouncementTimer::new(access, Duration::from_millis(10)),
+    );
 }
 
 fn finish_conference_announcement(
     access: &Access,
     conference_id: ConferenceId,
     mut active: ActiveConferenceAnnouncement,
-    mutation: &MediaAnchorMutation<'_>,
+    mutation: &MediaAnchorMutation,
 ) -> Vec<PbxCallId> {
-    if let Some(completion) = active.completion.take() {
-        completion.abort();
-    }
+    active.completion.take();
     stop_conference_tones(access, &active.call_ids);
     active.call_ids.clear();
-    let restore_calls = {
-        let restores = access.shared.media_anchor_restores.lock_unpoisoned();
-        let mut seen = HashSet::new();
-        active
-            .anchors
-            .iter()
-            .filter(|anchor| anchor.is_last() && seen.insert(anchor.call_id))
-            .filter_map(|anchor| restores.get(anchor.call_id).cloned())
-            .collect::<Vec<_>>()
-    };
+    let mut seen = HashSet::new();
+    let restore_calls = active
+        .anchors
+        .iter()
+        .filter(|anchor| seen.insert(anchor.call_id))
+        .filter_map(|anchor| anchor.restore_call())
+        .collect::<Vec<_>>();
     let failures = restore_conference_media(access, &restore_calls, mutation);
     if failures.is_empty() {
+        for anchor in &mut active.anchors {
+            anchor.release();
+        }
         return Vec::new();
     }
     let failures = failures.into_iter().collect::<HashSet<_>>();
@@ -884,11 +876,19 @@ fn finish_conference_announcement(
         .into_iter()
         .filter(|call| failures.contains(&call.pbx_id))
         .collect();
+    for anchor in &mut active.anchors {
+        if !failures.contains(&anchor.call_id) {
+            anchor.release();
+        }
+    }
     active
         .anchors
         .retain(|anchor| failures.contains(&anchor.call_id));
     active.restore_attempts = active.restore_attempts.saturating_add(1);
     if restore_attempts_exhausted(active.restore_attempts) {
+        for anchor in &mut active.anchors {
+            anchor.release();
+        }
         return failures.into_iter().collect();
     }
     active.completion = Some(schedule_conference_announcement_completion(
@@ -896,12 +896,9 @@ fn finish_conference_announcement(
         conference_id,
         active.generation,
     ));
-    let replaced = access
-        .shared
-        .conference_announcements
-        .lock_unpoisoned()
-        .insert(conference_id, active);
-    debug_assert!(replaced.is_none());
+    mutation
+        ._reservation
+        .commit_announcement(conference_id, active);
     Vec::new()
 }
 
@@ -920,50 +917,37 @@ fn terminate_conference_restore_failures(access: &Access, call_ids: Vec<PbxCallI
     }
 }
 
-fn drain_conference_announcement_restores(access: &Access, mutation: &MediaAnchorMutation<'_>) {
-    let pending = {
-        let mut announcements = access.shared.conference_announcements.lock_unpoisoned();
-        std::mem::take(&mut *announcements)
-    };
-    let mut terminal = Vec::new();
-    for (conference_id, mut active) in pending {
-        active.restore_attempts = MAX_RESTORE_ATTEMPTS.saturating_sub(1);
-        terminal.extend(finish_conference_announcement(
-            access,
-            conference_id,
-            active,
-            mutation,
-        ));
-    }
-    terminate_conference_restore_failures(access, terminal);
-}
-
 pub fn play_conference_announcement(
     access: &Access,
     operation: &ConferenceAnnouncementOperation,
 ) -> Result<(), AsteriskBackendError> {
-    let Some(media_anchor_mutation) = MediaAnchorMutation::try_acquire(access) else {
+    let participant_call_ids = operation
+        .targets
+        .iter()
+        .map(|target| target.call_id)
+        .collect::<Vec<_>>();
+    let Some(media_anchor_mutation) =
+        MediaAnchorMutation::try_conference(access, operation.conference_id, &participant_call_ids)
+    else {
         return Err(AsteriskBackendError::Failed {
             operation: "play conference announcement",
             calls: "media anchor transaction busy".into(),
         });
     };
-    let _mutation = access
-        .shared
-        .conference_announcement_mutations
-        .lock_unpoisoned();
     if operation.targets.is_empty() {
         return Err(AsteriskBackendError::Failed {
             operation: "play conference announcement",
             calls: "none".into(),
         });
     }
-    let generation =
-        allocate_announcement_generation(&access.shared.next_conference_announcement_id)
-            .ok_or_else(|| AsteriskBackendError::Failed {
-                operation: "play conference announcement",
-                calls: "generation exhausted".into(),
-            })?;
+    let generation = access
+        .shared
+        .media_runtime
+        .next_generation()
+        .ok_or_else(|| AsteriskBackendError::Failed {
+            operation: "play conference announcement",
+            calls: "generation exhausted".into(),
+        })?;
 
     let participant_call_ids = operation
         .targets
@@ -972,15 +956,12 @@ pub fn play_conference_announcement(
         .collect::<Vec<_>>();
     let previous = access
         .shared
-        .conference_announcements
-        .lock_unpoisoned()
-        .remove(&operation.conference_id);
+        .media_runtime
+        .take_announcement(operation.conference_id);
     let (inherited, previous_anchors) = previous.map_or_else(
         || (Vec::new(), Vec::new()),
         |mut previous| {
-            if let Some(completion) = previous.completion.take() {
-                completion.abort();
-            }
+            previous.completion.take();
             stop_conference_tones(access, &previous.call_ids);
             (previous.direct_calls, previous.anchors)
         },
@@ -989,20 +970,19 @@ pub fn play_conference_announcement(
     let (retained, retired): (Vec<_>, Vec<_>) = inherited
         .into_iter()
         .partition(|call| participant_set.contains(&call.pbx_id));
-    let registry = access.shared.media_anchors.lock_unpoisoned();
+    let registry = &access.shared.media_runtime;
     let inherited_announcement_calls = retained
         .into_iter()
         .filter(|call| {
-            !registry.is_anchored_for_other_reason(call.pbx_id, MediaAnchorReason::Announcement)
+            !registry.anchored_for_other_reason(call.pbx_id, MediaAnchorReason::Announcement)
         })
         .collect::<Vec<_>>();
     let retired = retired
         .into_iter()
         .filter(|call| {
-            !registry.is_anchored_for_other_reason(call.pbx_id, MediaAnchorReason::Announcement)
+            !registry.anchored_for_other_reason(call.pbx_id, MediaAnchorReason::Announcement)
         })
         .collect::<Vec<_>>();
-    drop(registry);
     let retired_failures = restore_conference_media(access, &retired, &media_anchor_mutation)
         .into_iter()
         .collect::<HashSet<_>>();
@@ -1022,7 +1002,9 @@ pub fn play_conference_announcement(
     let (mut anchors, released_previous_anchors): (Vec<_>, Vec<_>) = previous_anchors
         .into_iter()
         .partition(|anchor| anchor_plan.retain_previous.contains(&anchor.call_id));
-    drop(released_previous_anchors);
+    for mut anchor in released_previous_anchors {
+        anchor.release();
+    }
     let inherited_ids = inherited_announcement_calls
         .iter()
         .map(|call| call.pbx_id)
@@ -1037,20 +1019,43 @@ pub fn play_conference_announcement(
             .flatten()
         })
         .collect::<Vec<_>>();
-    {
-        let mut restores = access.shared.media_anchor_restores.lock_unpoisoned();
-        for call in &to_retarget {
-            restores.remember(call.pbx_id, call.clone());
-        }
-    }
-    anchors.extend(anchor_plan.acquire.iter().map(|call_id| {
-        MediaAnchorLease::acquire(
-            &access.shared,
+    for call_id in &anchor_plan.acquire {
+        let restore = to_retarget
+            .iter()
+            .find(|call| call.pbx_id == *call_id)
+            .cloned();
+        let Some(anchor) = access.shared.media_runtime.acquire(
+            &media_anchor_mutation._reservation,
+            access,
             *call_id,
             MediaAnchorReason::Announcement,
-            &media_anchor_mutation,
-        )
-    }));
+            restore,
+        ) else {
+            let active = ActiveConferenceAnnouncement {
+                generation,
+                call_ids: Vec::new(),
+                completion: None,
+                anchors,
+                direct_calls: retired_recovery_calls
+                    .into_iter()
+                    .chain(inherited_announcement_calls)
+                    .collect(),
+                restore_attempts: 0,
+            };
+            let terminal = finish_conference_announcement(
+                access,
+                operation.conference_id,
+                active,
+                &media_anchor_mutation,
+            );
+            terminate_conference_restore_failures(access, terminal);
+            return Err(AsteriskBackendError::CallUnavailable {
+                operation: "acquire announcement anchor",
+                call_id: *call_id,
+            });
+        };
+        anchors.push(anchor);
+    }
     let tone = conference_announcement_tone(operation.announcement);
     let mut adapter = AsteriskAnnouncementAdapter { access, tone };
     if let Err(failure) = start_announcement(
@@ -1066,7 +1071,9 @@ pub fn play_conference_announcement(
             .chain(retired_failures.iter().copied())
             .collect::<HashSet<_>>();
         if failed.is_empty() {
-            drop(anchors);
+            for mut anchor in anchors {
+                anchor.release();
+            }
         } else {
             let retained_calls = retired_recovery_calls
                 .into_iter()
@@ -1077,7 +1084,9 @@ pub fn play_conference_announcement(
             let (retained_anchors, released_anchors): (Vec<_>, Vec<_>) = anchors
                 .into_iter()
                 .partition(|anchor| failed.contains(&anchor.call_id));
-            drop(released_anchors);
+            for mut anchor in released_anchors {
+                anchor.release();
+            }
             let active = ActiveConferenceAnnouncement {
                 generation,
                 call_ids: Vec::new(),
@@ -1090,12 +1099,9 @@ pub fn play_conference_announcement(
                 direct_calls: retained_calls,
                 restore_attempts: 0,
             };
-            let replaced = access
-                .shared
-                .conference_announcements
-                .lock_unpoisoned()
-                .insert(operation.conference_id, active);
-            debug_assert!(replaced.is_none());
+            media_anchor_mutation
+                ._reservation
+                .commit_announcement(operation.conference_id, active);
         }
         let operation = match failure.stage {
             AnnouncementFailureStage::Retarget => "anchor conference announcement media",
@@ -1114,22 +1120,17 @@ pub fn play_conference_announcement(
         .collect::<Vec<_>>();
     let completion =
         schedule_conference_announcement_completion(access, operation.conference_id, generation);
-    let replaced = access
-        .shared
-        .conference_announcements
-        .lock_unpoisoned()
-        .insert(
-            operation.conference_id,
-            ActiveConferenceAnnouncement {
-                generation,
-                call_ids: participant_call_ids,
-                completion: Some(completion),
-                anchors,
-                direct_calls,
-                restore_attempts: 0,
-            },
-        );
-    debug_assert!(replaced.is_none());
+    media_anchor_mutation._reservation.commit_announcement(
+        operation.conference_id,
+        ActiveConferenceAnnouncement {
+            generation,
+            call_ids: participant_call_ids,
+            completion: Some(completion),
+            anchors,
+            direct_calls,
+            restore_attempts: 0,
+        },
+    );
     Ok(())
 }
 
@@ -1137,104 +1138,67 @@ pub fn complete_conference_announcement(
     access: &Access,
     conference_id: ConferenceId,
     generation: AnnouncementGeneration,
-) {
-    if let Some(mutation) = MediaAnchorMutation::try_acquire(access) {
-        complete_conference_announcement_locked(access, conference_id, generation, &mutation);
-        return;
-    }
-    defer_conference_announcement_completion(access, conference_id, generation);
-}
-
-fn complete_conference_announcement_locked(
-    access: &Access,
-    conference_id: ConferenceId,
-    generation: AnnouncementGeneration,
-    mutation: &MediaAnchorMutation<'_>,
-) {
-    let terminal = {
-        let _mutation = access
-            .shared
-            .conference_announcement_mutations
-            .lock_unpoisoned();
-        let mut announcements = access.shared.conference_announcements.lock_unpoisoned();
-        if announcements
-            .get(&conference_id)
-            .is_none_or(|active| !announcement_generation_is_current(active.generation, generation))
-        {
-            return;
-        }
-        let Some(active) = announcements.remove(&conference_id) else {
-            return;
-        };
-        drop(announcements);
-        finish_conference_announcement(access, conference_id, active, mutation)
+) -> bool {
+    let Some(mutation) = MediaAnchorMutation::try_conference(access, conference_id, &[]) else {
+        return true;
     };
-    terminate_conference_restore_failures(access, terminal);
+    if access.shared.media_runtime.generation(conference_id) != Some(generation) {
+        return false;
+    }
+    if let Some(active) = access.shared.media_runtime.take_announcement(conference_id) {
+        let terminal = finish_conference_announcement(access, conference_id, active, &mutation);
+        terminate_conference_restore_failures(access, terminal);
+    }
+    false
 }
 
 pub fn cancel_conference_announcement(access: &Access, conference_id: ConferenceId) {
-    if let Some(mutation) = MediaAnchorMutation::try_acquire(access) {
-        cancel_conference_announcement_locked(access, conference_id, &mutation);
+    let Some(mutation) = MediaAnchorMutation::try_conference(access, conference_id, &[]) else {
+        if let Some(generation) = access.shared.media_runtime.generation(conference_id) {
+            defer_conference_announcement_completion(access, conference_id, generation);
+        }
         return;
-    }
-    let generation = access
-        .shared
-        .conference_announcements
-        .lock_unpoisoned()
-        .get(&conference_id)
-        .map(|active| active.generation);
-    if let Some(generation) = generation {
-        defer_conference_announcement_completion(access, conference_id, generation);
+    };
+    if let Some(active) = access.shared.media_runtime.take_announcement(conference_id) {
+        let terminal = finish_conference_announcement(access, conference_id, active, &mutation);
+        terminate_conference_restore_failures(access, terminal);
     }
 }
 
-fn cancel_conference_announcement_locked(
-    access: &Access,
-    conference_id: ConferenceId,
-    mutation: &MediaAnchorMutation<'_>,
-) {
-    let terminal = {
-        let _mutation = access
-            .shared
-            .conference_announcement_mutations
-            .lock_unpoisoned();
-        let active = access
-            .shared
-            .conference_announcements
-            .lock_unpoisoned()
-            .remove(&conference_id);
-        active.map_or_else(Vec::new, |active| {
-            finish_conference_announcement(access, conference_id, active, mutation)
-        })
-    };
-    terminate_conference_restore_failures(access, terminal);
+pub(super) fn reap_conference_tasks(shared: &super::Shared) {
+    let cancellations = shared
+        .conference_destination_tasks
+        .lock_unpoisoned()
+        .reap_finished();
+    for cancellation in cancellations {
+        ConferenceTaskCancellation::cancel(cancellation);
+    }
 }
 
 pub async fn shutdown_conferences(access: &Access) {
-    let plans = controller_step(&access.shared.controller, |controller| {
-        controller.drain_conferences_for_shutdown()
-    });
+    let plans = access
+        .shared
+        .controller
+        .drain_conferences_for_shutdown()
+        .unwrap_or_else(|_| Vec::new());
     let mut conference_ids = plans
         .iter()
         .map(|plan| plan.conference_id)
-        .chain(
-            access
-                .shared
-                .conference_announcements
-                .lock_unpoisoned()
-                .keys()
-                .copied(),
-        )
+        .chain(access.shared.media_runtime.announcement_ids())
         .collect::<Vec<_>>();
     conference_ids.sort_unstable();
     conference_ids.dedup();
 
-    let media_anchor_mutation = MediaAnchorMutation::acquire(access).await;
-    for conference_id in &conference_ids {
-        cancel_conference_announcement_locked(access, *conference_id, &media_anchor_mutation);
+    for conference_id in conference_ids {
+        let Some(mutation) = MediaAnchorMutation::conference(access, conference_id).await else {
+            continue;
+        };
+        if let Some(mut active) = access.shared.media_runtime.take_announcement(conference_id) {
+            active.restore_attempts = MAX_RESTORE_ATTEMPTS.saturating_sub(1);
+            let terminal = finish_conference_announcement(access, conference_id, active, &mutation);
+            terminate_conference_restore_failures(access, terminal);
+        }
     }
-    drain_conference_announcement_restores(access, &media_anchor_mutation);
-    drop(media_anchor_mutation);
     for plan in plans {
         execute_cleanup_effects(access, plan.effects).await;
         for call_id in plan.call_ids {
@@ -1259,31 +1223,16 @@ pub async fn shutdown_conferences(access: &Access) {
         }
     }
 
-    let remaining_bridges = {
-        let mut bridges = access.shared.bridges.lock_unpoisoned();
-        std::mem::take(&mut *bridges)
-    };
-    for (bridge_id, bridge) in remaining_bridges {
-        if let Err(error) = bridge.destroy() {
-            ast_log(
-                LogLevel::Warning,
-                &format!(
-                    "unable to destroy conference bridge {bridge_id:?} during unload: {error}"
-                ),
-            );
-        }
-    }
-    let remaining_barge_bridges = {
-        let mut bridges = access.shared.barge_bridges.lock_unpoisoned();
-        std::mem::take(&mut *bridges)
-    };
-    for (bridge_id, bridge) in remaining_barge_bridges {
-        if let Err(error) = bridge.release() {
-            ast_log(
-                LogLevel::Warning,
-                &format!("unable to release barge bridge {bridge_id:?} during unload: {error}"),
-            );
-        }
+    if let Err(error) = access
+        .shared
+        .bridge_runtime
+        .execute_async(access, super::bridge_owner::BridgeAction::Drain)
+        .await
+    {
+        ast_log(
+            LogLevel::Warning,
+            &format!("unable to drain native bridges during unload: {error}"),
+        );
     }
 
     // A conference callback may already have committed controller cleanup
@@ -1304,16 +1253,20 @@ pub async fn shutdown_conferences(access: &Access) {
 }
 
 pub async fn shutdown_remote_hangups(access: &Access) {
-    let effects = controller_step(&access.shared.controller, |controller| {
-        controller.drain_remote_hangups()
-    });
+    let effects = access
+        .shared
+        .controller
+        .drain_remote_hangups()
+        .unwrap_or_else(|_| Vec::new());
     execute_cleanup_effects(access, effects).await;
 }
 
 pub async fn shutdown_one_way_microphones(access: &Access) {
-    let effects = controller_step(&access.shared.controller, |controller| {
-        controller.drain_one_way_microphones()
-    });
+    let effects = access
+        .shared
+        .controller
+        .drain_one_way_microphones()
+        .unwrap_or_else(|_| Vec::new());
     execute_cleanup_effects(access, effects).await;
 }
 
@@ -1342,9 +1295,12 @@ pub async fn begin_handset_media(
     }
     send_handset_call_state(access, device_id.clone(), call_id, state).await?;
     if state == PhoneCallState::Connected
-        && let Some(info) = controller_step(&access.shared.controller, |controller| {
-            controller.call_info(call_id).cloned()
-        })
+        && let Some(info) = access
+            .shared
+            .controller
+            .snapshot()
+            .call_info(call_id)
+            .cloned()
     {
         access
             .phone
@@ -1473,13 +1429,14 @@ pub fn receive_media_source(
     call_id: CallId,
     codec: Codec,
 ) -> Result<MediaEndpoint, String> {
-    let pbx_id = controller_step(&access.shared.controller, |controller| {
-        controller
-            .call(call_id)
-            .filter(|call| &call.device_id == device_id)
-            .map(|call| call.pbx_id)
-    })
-    .ok_or_else(|| format!("call {call_id:?} has no Asterisk channel"))?;
+    let pbx_id = access
+        .shared
+        .controller
+        .snapshot()
+        .call(call_id)
+        .filter(|call| &call.device_id == device_id)
+        .map(|call| call.pbx_id)
+        .ok_or_else(|| format!("call {call_id:?} has no Asterisk channel"))?;
     local_media_endpoint(access, pbx_id, device_id, codec)
         .ok_or_else(|| format!("call {call_id:?} has no local media endpoint"))
 }
@@ -1498,9 +1455,11 @@ pub async fn terminate_failed_pbx_call(
     call_id: PbxCallId,
 ) {
     let _ = backend.hangup(call_id);
-    let outcome = controller_step(&access.shared.controller, |controller| {
-        controller.pbx_hangup_with_effects(call_id)
-    });
+    let outcome = access
+        .shared
+        .controller
+        .pbx_hangup_with_effects(call_id)
+        .unwrap_or_else(|_| None);
     if let Some(outcome) = outcome {
         execute_cleanup_effects(access, outcome.effects).await;
     }
@@ -1519,17 +1478,21 @@ pub async fn handle_effect_error(
     let effect = match error {
         EffectExecutionError::Backend { effect, .. } => effect,
         EffectExecutionError::Handset { effect, .. } => {
-            let video_cleanup = controller_step(&access.shared.controller, |controller| {
-                controller.recover_optional_video_effect_failure(&effect)
-            });
+            let video_cleanup = access
+                .shared
+                .controller
+                .recover_optional_video_effect_failure(&effect)
+                .unwrap_or_else(|_| None);
             if let Some(video_cleanup) = video_cleanup {
                 execute_cleanup_effects(access, video_cleanup).await;
                 return;
             }
             if let Some(call_id) = handset_effect_call_id(&effect) {
-                let failure = controller_step(&access.shared.controller, |controller| {
-                    controller.conference_participant_failed(call_id)
-                });
+                let failure = access
+                    .shared
+                    .controller
+                    .conference_participant_failed(call_id)
+                    .unwrap_or_else(|_| None);
                 if let Some(failure) = failure {
                     let conference_id = failure.conference_id;
                     let surviving = failure.surviving_session.clone();
@@ -1561,13 +1524,11 @@ pub async fn handle_effect_error(
                         | HandsetEffect::BeginAnswerMedia { .. }
                         | HandsetEffect::BeginOutboundMedia { .. }
                 ) {
-                    let cleanup = controller_step(&access.shared.controller, |controller| {
-                        if controller.barge_session(call_id).is_some() {
-                            controller.abort_barge(call_id, true, true)
-                        } else {
-                            Vec::new()
-                        }
-                    });
+                    let cleanup = access
+                        .shared
+                        .controller
+                        .abort_present_barge(call_id)
+                        .unwrap_or_else(|_| Vec::new());
                     if !cleanup.is_empty() {
                         let barger_pbx = cleanup.iter().find_map(|effect| match effect {
                             DriverEffect::Backend(PbxEffect::Hangup { call_id }) => Some(*call_id),
@@ -1580,9 +1541,7 @@ pub async fn handle_effect_error(
                         return;
                     }
                 }
-                if let Some(pbx_id) = controller_step(&access.shared.controller, |controller| {
-                    controller.call_pbx_id(call_id)
-                }) {
+                if let Some(pbx_id) = access.shared.controller.snapshot().call_pbx_id(call_id) {
                     terminate_failed_pbx_call(access, backend, pbx_id).await;
                 }
             }
@@ -1596,20 +1555,11 @@ pub async fn handle_effect_error(
             binding,
             ..
         } => {
-            if let Some(pending) = take_pending_retrieval_by_pbx(access, call_id) {
-                access
-                    .shared
-                    .parking_registry
-                    .lock_unpoisoned()
-                    .release_claim(&pending.lot, pending.slot, handset_call_id);
-            }
-            let (barge, cleanup) = controller_step(&access.shared.controller, |controller| {
-                if controller.barge_session(handset_call_id).is_some() {
-                    (true, controller.abort_barge(handset_call_id, false, false))
-                } else {
-                    (false, controller.hangup(handset_call_id))
-                }
-            });
+            let (barge, cleanup) = access
+                .shared
+                .controller
+                .reject_native_call(handset_call_id)
+                .unwrap_or_else(|_| (false, Vec::new()));
             remove_channel(access, call_id);
             if barge {
                 execute_cleanup_effects(access, cleanup).await;
@@ -1628,13 +1578,11 @@ pub async fn handle_effect_error(
         PbxEffect::Barge {
             operation: BargeOperation::Join { barger_call_id, .. },
         } => {
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                controller
-                    .barge_session_by_pbx(barger_call_id)
-                    .map(|session| session.handset_call_id)
-                    .map(|call_id| controller.abort_barge(call_id, false, true))
-                    .unwrap_or_default()
-            });
+            let cleanup = access
+                .shared
+                .controller
+                .abort_native_barge(barger_call_id)
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             remove_channel(access, barger_call_id);
         }
@@ -1653,9 +1601,11 @@ pub async fn handle_effect_error(
                     ..
                 } => (call_id, device_id, handset_call_id),
             };
-            let cleanup = controller_step(&access.shared.controller, |controller| {
-                controller.hangup(handset_call_id)
-            });
+            let cleanup = access
+                .shared
+                .controller
+                .hangup(handset_call_id)
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, cleanup).await;
             remove_channel(access, pbx_id);
             let _ = access
@@ -1679,91 +1629,26 @@ pub async fn handle_effect_error(
                 ))
                 .await;
         }
-        PbxEffect::Parking { operation } => match operation {
-            ParkingOperation::Park {
-                call_id: pbx_id, ..
-            } => {
-                let pending = {
-                    let mut pending = access.shared.pending_parks.lock_unpoisoned();
-                    let call_id = pending
-                        .iter()
-                        .find(|(_, attempt)| attempt.pbx_id == pbx_id)
-                        .map(|(call_id, _)| *call_id);
-                    call_id.and_then(|call_id| {
-                        pending.remove(&call_id).map(|attempt| (call_id, attempt))
-                    })
-                };
-                if let Some((call_id, pending)) = pending {
-                    let effects = controller_step(&access.shared.controller, |controller| {
-                        controller.parking_failed(call_id)
-                    });
-                    execute_cleanup_effects(access, effects).await;
-                    let _ = access
-                        .phone
-                        .send(PhoneCommand::new(
-                            pending.device_id,
-                            PhoneCommandAction::DisplayPrompt {
-                                call_id,
-                                timeout_seconds: 4,
-                                text: "Unable to park call".into(),
-                            },
-                        ))
-                        .await;
-                }
-            }
-            ParkingOperation::Retrieve {
-                call_id: pbx_id, ..
-            } => {
-                if let Some(pending) = take_pending_retrieval_by_pbx(access, pbx_id) {
-                    let call_id = controller_step(&access.shared.controller, |controller| {
-                        controller
-                            .active_or_primary_call_by_pbx(pbx_id)
-                            .map(|call| call.sccp_id)
-                    });
-                    if let Some(call_id) = call_id {
-                        access
-                            .shared
-                            .parking_registry
-                            .lock_unpoisoned()
-                            .release_claim(&pending.lot, pending.slot, call_id);
-                        let effects = controller_step(&access.shared.controller, |controller| {
-                            controller.parking_retrieval_failed(call_id)
-                        });
-                        execute_cleanup_effects(access, effects).await;
-                        remove_channel(access, pbx_id);
-                        let _ = access
-                            .phone
-                            .send(PhoneCommand::new(
-                                pending.device_id.clone(),
-                                PhoneCommandAction::DisplayPrompt {
-                                    call_id,
-                                    timeout_seconds: 3,
-                                    text: "Parked call unavailable".into(),
-                                },
-                            ))
-                            .await;
-                        access.shared.parking_notifications.lock_unpoisoned().push(
-                            PendingParkingNotification {
-                                device_id: pending.device_id,
-                                call_id,
-                                deadline: Instant::now() + PARKING_NOTIFICATION_TIME,
-                            },
-                        );
-                    }
-                }
-            }
-        },
+        PbxEffect::Parking { operation } => {
+            let update = access
+                .shared
+                .controller
+                .fail_parking_operation(operation, Instant::now() + PARKING_NOTIFICATION_TIME)
+                .unwrap_or_default();
+            crate::asterisk::phone::execute_parking_update(access, update).await;
+        }
         PbxEffect::StartRouting { call_id, .. }
         | PbxEffect::ConfigureMedia { call_id, .. }
         | PbxEffect::ConfigureMediaOnly { call_id, .. } => {
             terminate_failed_pbx_call(access, backend, call_id).await;
         }
         PbxEffect::StartConferenceDestination { operation } => {
-            let handset = controller_step(&access.shared.controller, |controller| {
-                controller
-                    .active_or_primary_call_by_pbx(operation.call_id)
-                    .map(|call| (call.device_id.clone(), call.sccp_id))
-            });
+            let handset = access
+                .shared
+                .controller
+                .snapshot()
+                .active_or_primary_call_by_pbx(operation.call_id)
+                .map(|call| (call.device_id.clone(), call.sccp_id));
             if let Some((device_id, call_id)) = handset {
                 let _ = access
                     .phone

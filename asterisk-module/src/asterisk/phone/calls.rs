@@ -2,30 +2,33 @@
 
 use super::transfer::cancel_transfer;
 use super::{
-    Access, AsteriskBackend, BridgeOperation, CallId, ConferenceId, ConferenceMutationToken,
-    ConferenceParticipantRejection, DeviceId, DriverEffect, HandsetEffect, LogLevel, ParticipantId,
-    PbxCallId, PbxEffect, PhoneDeviceEventKind, PhoneEvent, RuntimeRecordings,
-    TransferCancellationReason, ast_log, cancel_conference_announcement,
-    conference_mutation_is_active, controller_step, display_conference_prompt,
-    execute_cleanup_effects, execute_effects, execute_one_effect, handset_effects,
-    show_conference_list,
+    Access, AsteriskBackend, BridgeOperation, CallId, ConferenceParticipantRejection, DeviceId,
+    DriverEffect, HandsetEffect, LogLevel, PbxCallId, PbxEffect, PhoneDeviceEventKind, PhoneEvent,
+    RuntimeRecordings, TransferCancellationReason, ast_log, cancel_conference_announcement,
+    conference_mutation_is_active, display_conference_prompt, execute_cleanup_effects,
+    execute_effects, execute_one_effect, handset_effects, show_conference_list,
 };
+use crate::runtime::controller::HoldPlan;
+
 mod call_control;
 mod media_events;
 mod session;
 mod telemetry;
+pub use session::{PreparedSessionEvent, handle_prepared_session_event, prepare_session_event};
 
 fn owned_pbx_call(access: &Access, device_id: &DeviceId, call_id: CallId) -> Option<PbxCallId> {
-    controller_step(&access.shared.controller, |controller| {
-        controller
-            .call(call_id)
-            .and_then(|call| (&call.device_id == device_id).then_some(call.pbx_id))
-    })
+    access
+        .shared
+        .controller
+        .snapshot()
+        .call(call_id)
+        .and_then(|call| (&call.device_id == device_id).then_some(call.pbx_id))
 }
 
 pub async fn handle_phone_event(
     access: &Access,
     recordings: &mut RuntimeRecordings,
+    system_message: &mut Option<crate::asterisk::runtime::ActiveSystemMessage>,
     event: PhoneEvent,
 ) {
     let device_event = match event {
@@ -54,16 +57,18 @@ pub async fn handle_phone_event(
         PhoneEvent::Device(event) => event,
     };
     if !matches!(&device_event.event, PhoneDeviceEventKind::Registered(_))
-        && !controller_step(&access.shared.controller, |controller| {
-            controller.session_is_current(&device_event.device_id, device_event.session_generation)
-        })
+        && !access
+            .shared
+            .controller
+            .snapshot()
+            .session_is_current(&device_event.device_id, device_event.session_generation)
     {
         return;
     }
 
     let actions = match phone_event_family(&device_event.event) {
         PhoneEventFamily::Session => {
-            session::handle_session_event(access, recordings, device_event).await
+            session::handle_session_event(access, recordings, system_message, device_event).await
         }
         PhoneEventFamily::CallControl => {
             call_control::handle_call_control_event(access, recordings, device_event).await
@@ -138,21 +143,11 @@ pub(super) async fn handle_handset_hangup(
     call_id: CallId,
     physical_on_hook: bool,
 ) {
-    let (conference_id, effects, surviving_conference) =
-        controller_step(&access.shared.controller, |controller| {
-            let conference_id = controller
-                .conference_session(call_id)
-                .map(|session| session.id);
-            let effects = if physical_on_hook {
-                controller.hangup(call_id)
-            } else {
-                controller.terminate(call_id)
-            };
-            let surviving = conference_id
-                .and_then(|conference_id| controller.conference_session_by_id(conference_id))
-                .cloned();
-            (conference_id, effects, surviving)
-        });
+    let (conference_id, effects, surviving_conference) = access
+        .shared
+        .controller
+        .prepare_phone_hangup(call_id, physical_on_hook)
+        .unwrap_or_else(|_| (None, Vec::new(), None));
     if let Some(session) = surviving_conference {
         execute_cleanup_effects(access, effects).await;
         let show_list = access
@@ -177,9 +172,12 @@ pub async fn handle_hold_or_resume(
     pbx_originated: bool,
 ) {
     if !held && !pbx_originated {
-        let transaction = controller_step(&access.shared.controller, |controller| {
-            controller.transfer_transaction(call_id).cloned()
-        });
+        let transaction = access
+            .shared
+            .controller
+            .snapshot()
+            .transfer_transaction(call_id)
+            .cloned();
         if let Some(transaction) = transaction
             && transaction.source.handset_call_id == call_id
         {
@@ -192,53 +190,12 @@ pub async fn handle_hold_or_resume(
             return;
         }
     }
-    enum HoldPlan {
-        Missing,
-        Regular(Vec<DriverEffect>),
-        Conference {
-            device_id: DeviceId,
-            result: Result<
-                (
-                    ConferenceId,
-                    ParticipantId,
-                    ConferenceMutationToken,
-                    Vec<DriverEffect>,
-                ),
-                ConferenceParticipantRejection,
-            >,
-        },
-    }
 
-    let plan = controller_step(&access.shared.controller, |controller| {
-        let Some(device_id) = controller.call_device_id(call_id).cloned() else {
-            return HoldPlan::Missing;
-        };
-        if controller.conference_session(call_id).is_none() {
-            return HoldPlan::Regular(if held {
-                controller.hold(call_id)
-            } else {
-                controller.resume(call_id)
-            });
-        }
-        let result = (|| {
-            let effects = controller.begin_conference_moderator_leg_transition(call_id, held)?;
-            let session = controller
-                .conference_session(call_id)
-                .ok_or(ConferenceParticipantRejection::Unavailable)?;
-            let participant = session
-                .participants
-                .iter()
-                .find(|participant| participant.handset_call_id == call_id)
-                .ok_or(ConferenceParticipantRejection::InvalidParticipant)?;
-            let conference_id = session.id;
-            let participant_id = participant.id;
-            let mutation = controller
-                .claim_conference_mutation_by_id(conference_id)
-                .ok_or(ConferenceParticipantRejection::Conflict)?;
-            Ok((conference_id, participant_id, mutation, effects))
-        })();
-        HoldPlan::Conference { device_id, result }
-    });
+    let plan = access
+        .shared
+        .controller
+        .prepare_hold(call_id, held)
+        .unwrap_or_else(|_| HoldPlan::Missing);
     let (device_id, conference_id, participant_id, mutation, effects) = match plan {
         HoldPlan::Missing => return,
         HoldPlan::Regular(effects) => {
@@ -299,20 +256,18 @@ pub async fn handle_hold_or_resume(
                 LogLevel::Warning,
                 &format!("conference moderator leg transition failed: {error}"),
             );
-            let rollback = controller_step(&access.shared.controller, |controller| {
-                if !controller.conference_mutation_is_active(mutation) {
-                    return Vec::new();
-                }
-                let rollback = controller.abort_conference_moderator_leg_transition(
+            let rollback = access
+                .shared
+                .controller
+                .abort_reserved_hold(
+                    mutation,
                     conference_id,
                     participant_id,
                     held,
-                    &completed_music,
+                    completed_music.clone(),
                     handset_attempted,
-                );
-                controller.complete_conference_mutation(mutation);
-                rollback
-            });
+                )
+                .unwrap_or_else(|_| Vec::new());
             execute_cleanup_effects(access, rollback).await;
             display_conference_prompt(
                 access,
@@ -335,34 +290,29 @@ pub async fn handle_hold_or_resume(
         }
     }
 
-    let (committed, rollback) = controller_step(&access.shared.controller, |controller| {
-        if !controller.conference_mutation_is_active(mutation) {
-            return (false, Vec::new());
-        }
-        let committed =
-            controller.conference_moderator_leg_transitioned(conference_id, participant_id, held);
-        let rollback = if committed {
-            Vec::new()
-        } else {
-            controller.abort_conference_moderator_leg_transition(
-                conference_id,
-                participant_id,
-                held,
-                &completed_music,
-                handset_attempted,
-            )
-        };
-        controller.complete_conference_mutation(mutation);
-        (committed, rollback)
-    });
+    let (committed, rollback) = access
+        .shared
+        .controller
+        .commit_reserved_hold(
+            mutation,
+            conference_id,
+            participant_id,
+            held,
+            completed_music.clone(),
+            handset_attempted,
+        )
+        .unwrap_or_else(|_| (false, Vec::new()));
     if !committed {
         execute_cleanup_effects(access, rollback).await;
         return;
     }
     if !held {
-        let session = controller_step(&access.shared.controller, |controller| {
-            controller.conference_session_by_id(conference_id).cloned()
-        });
+        let session = access
+            .shared
+            .controller
+            .snapshot()
+            .conference_session_by_id(conference_id)
+            .cloned();
         if let Some(session) = session
             && access
                 .config()

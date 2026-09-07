@@ -1,14 +1,21 @@
 //! Serializes durable background state and handset delivery on one blocking owner.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use sccp_protocol::{
-    CiscoIpPhoneSetBackground, Command as PhoneCommand, CommandAction as PhoneCommandAction,
-    DeviceId, DeviceType, PhoneBackgroundHttpUrl, ServerError, TransactionId,
+    ApplicationId, CallReference, CiscoIpPhoneSetBackground, CommandAction as PhoneCommandAction,
+    DeviceId, DeviceType, LineInstance, PHONE_BACKGROUND_APPLICATION_ID, PhoneBackgroundHttpUrl,
+    PhoneServiceRouting, ServerError, StationSessionTarget, TransactionId,
 };
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
+
+use crate::runtime::mailbox::{
+    AdmissionError, MailboxReceiver, MailboxSender, QueueSnapshot, RUNTIME_MAILBOX_CAPACITY,
+    mailbox,
+};
 
 use super::{Access, ast_log};
 use crate::asterisk::MANAGER_CONTROL_TIMEOUT;
@@ -18,10 +25,7 @@ use crate::config::{
     BackgroundThumbnailSource, DeviceBackground, DeviceBackgroundError, DeviceBackgroundSelection,
     ModuleConfig, ResolvedDeviceBackground,
 };
-use crate::runtime::controller::controller_step;
 use crate::state::background::{BackgroundStore, BackgroundStoreError};
-
-const BACKGROUND_REQUEST_CAPACITY: usize = 64;
 
 #[derive(Debug, Error)]
 pub(super) enum BackgroundRuntimeError {
@@ -55,7 +59,6 @@ enum BackgroundRequest {
     Cli {
         device: DeviceId,
         operation: BackgroundCliOperation,
-        deadline: Instant,
         response: std::sync::mpsc::SyncSender<String>,
     },
     Reconcile {
@@ -63,22 +66,19 @@ enum BackgroundRequest {
         registered: Vec<DeviceId>,
         response: oneshot::Sender<Vec<(DeviceId, BackgroundRuntimeError)>>,
     },
-    Shutdown {
-        response: oneshot::Sender<()>,
-    },
 }
 
 #[derive(Clone)]
 pub(super) struct BackgroundRuntimeHandle {
-    requests: mpsc::Sender<BackgroundRequest>,
+    requests: MailboxSender<BackgroundRequest>,
 }
 
 pub(super) struct BackgroundRuntimeMailbox {
-    requests: mpsc::Receiver<BackgroundRequest>,
+    requests: MailboxReceiver<BackgroundRequest>,
 }
 
 pub(super) fn background_runtime_channel() -> (BackgroundRuntimeHandle, BackgroundRuntimeMailbox) {
-    let (requests, receiver) = mpsc::channel(BACKGROUND_REQUEST_CAPACITY);
+    let (requests, receiver) = mailbox(RUNTIME_MAILBOX_CAPACITY);
     (
         BackgroundRuntimeHandle { requests },
         BackgroundRuntimeMailbox { requests: receiver },
@@ -86,17 +86,18 @@ pub(super) fn background_runtime_channel() -> (BackgroundRuntimeHandle, Backgrou
 }
 
 impl BackgroundRuntimeHandle {
+    pub(super) fn snapshot(&self) -> QueueSnapshot {
+        self.requests.snapshot()
+    }
+
     async fn apply(&self, device: DeviceId) -> Result<(), BackgroundRuntimeError> {
-        match tokio::time::timeout(
-            MANAGER_CONTROL_TIMEOUT,
-            self.requests.send(BackgroundRequest::Apply { device }),
-        )
-        .await
-        {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(BackgroundRuntimeError::Stopped),
-            Err(_) => Err(BackgroundRuntimeError::TimedOut),
-        }
+        self.requests
+            .send(
+                BackgroundRequest::Apply { device },
+                Some(Instant::now() + MANAGER_CONTROL_TIMEOUT),
+            )
+            .await
+            .map_err(background_admission_error)
     }
 
     fn execute_cli(
@@ -108,20 +109,16 @@ impl BackgroundRuntimeHandle {
             .checked_add(MANAGER_CONTROL_TIMEOUT)
             .ok_or(BackgroundRuntimeError::TimedOut)?;
         let (response, result) = std::sync::mpsc::sync_channel(1);
-        match self.requests.try_send(BackgroundRequest::Cli {
-            device,
-            operation,
-            deadline,
-            response,
-        }) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(BackgroundRuntimeError::QueueFull);
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                return Err(BackgroundRuntimeError::Stopped);
-            }
-        }
+        self.requests
+            .try_send(
+                BackgroundRequest::Cli {
+                    device,
+                    operation,
+                    response,
+                },
+                Some(deadline),
+            )
+            .map_err(background_admission_error)?;
         match result.recv_timeout(MANAGER_CONTROL_TIMEOUT) {
             Ok(result) => Ok(result),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -141,13 +138,16 @@ impl BackgroundRuntimeHandle {
         let (response, result) = oneshot::channel();
         let request = async {
             self.requests
-                .send(BackgroundRequest::Reconcile {
-                    previous,
-                    registered,
-                    response,
-                })
+                .send(
+                    BackgroundRequest::Reconcile {
+                        previous,
+                        registered,
+                        response,
+                    },
+                    Some(Instant::now() + MANAGER_CONTROL_TIMEOUT),
+                )
                 .await
-                .map_err(|_| BackgroundRuntimeError::Stopped)?;
+                .map_err(background_admission_error)?;
             result.await.map_err(|_| BackgroundRuntimeError::Stopped)
         };
         match tokio::time::timeout(MANAGER_CONTROL_TIMEOUT, request).await {
@@ -157,19 +157,23 @@ impl BackgroundRuntimeHandle {
     }
 
     pub(super) async fn shutdown(&self) -> Result<(), BackgroundRuntimeError> {
-        let (response, result) = oneshot::channel();
-        let request = async {
-            self.requests
-                .send(BackgroundRequest::Shutdown { response })
-                .await
-                .map_err(|_| BackgroundRuntimeError::Stopped)?;
-            result.await.map_err(|_| BackgroundRuntimeError::Stopped)
-        };
-        match tokio::time::timeout(MANAGER_CONTROL_TIMEOUT, request).await {
-            Ok(result) => result,
-            Err(_) => Err(BackgroundRuntimeError::TimedOut),
-        }
+        self.requests.close();
+        Ok(())
     }
+}
+
+fn background_admission_error(error: AdmissionError) -> BackgroundRuntimeError {
+    match error {
+        AdmissionError::Full => BackgroundRuntimeError::QueueFull,
+        AdmissionError::Closed => BackgroundRuntimeError::Stopped,
+        AdmissionError::Expired => BackgroundRuntimeError::TimedOut,
+    }
+}
+
+struct PendingBackgroundResponse {
+    target: StationSessionTarget,
+    routing: PhoneServiceRouting,
+    deadline: Instant,
 }
 
 pub(super) struct BackgroundRuntime {
@@ -177,6 +181,7 @@ pub(super) struct BackgroundRuntime {
     store: BackgroundStore<AsteriskDatabase>,
     mailbox: BackgroundRuntimeMailbox,
     next_transaction_id: u32,
+    pending_responses: HashMap<DeviceId, PendingBackgroundResponse>,
 }
 
 impl BackgroundRuntime {
@@ -190,11 +195,38 @@ impl BackgroundRuntime {
             store,
             mailbox,
             next_transaction_id: 1,
+            pending_responses: HashMap::new(),
         }
     }
 
     pub(super) fn run(mut self) {
-        while let Some(request) = self.mailbox.requests.blocking_recv() {
+        loop {
+            self.expire_responses();
+            let deadline = self
+                .pending_responses
+                .values()
+                .map(|pending| pending.deadline)
+                .min();
+            let request = self.access.handle.block_on(async {
+                match deadline {
+                    Some(deadline) => tokio::select! {
+                        request = self.mailbox.requests.recv() => Some(request),
+                        _ = tokio::time::sleep_until(deadline.into()) => None,
+                    },
+                    None => Some(self.mailbox.requests.recv().await),
+                }
+            });
+            let Some(request) = request else {
+                continue;
+            };
+            let Some(request) = request else {
+                break;
+            };
+            if request.is_expired(Instant::now()) {
+                request.record_expiration();
+                continue;
+            }
+            let (request, _admission) = request.into_parts();
             match request {
                 BackgroundRequest::Apply { device } => {
                     if let Err(error) = self.apply_registered(&device) {
@@ -209,13 +241,10 @@ impl BackgroundRuntime {
                 BackgroundRequest::Cli {
                     device,
                     operation,
-                    deadline,
                     response,
                 } => {
-                    if Instant::now() < deadline {
-                        let result = self.execute_cli_operation(device, operation);
-                        drop(response.send(result));
-                    }
+                    let result = self.execute_cli_operation(device, operation);
+                    drop(response.send(result));
                 }
                 BackgroundRequest::Reconcile {
                     previous,
@@ -225,11 +254,32 @@ impl BackgroundRuntime {
                     let failures = self.reconcile_backgrounds(&previous, &registered);
                     drop(response.send(failures));
                 }
-                BackgroundRequest::Shutdown { response } => {
-                    self.mailbox.requests.close();
-                    let _response_was_dropped = response.send(());
-                    return;
-                }
+            }
+        }
+        for (_, pending) in std::mem::take(&mut self.pending_responses) {
+            self.cancel_response(pending);
+        }
+    }
+
+    fn cancel_response(&self, pending: PendingBackgroundResponse) {
+        let _ = self.access.handle.block_on(
+            self.access
+                .phone
+                .cancel_service_response(pending.target, pending.routing),
+        );
+    }
+
+    fn expire_responses(&mut self) {
+        let now = Instant::now();
+        let expired = self
+            .pending_responses
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(device, _)| device.clone())
+            .collect::<Vec<_>>();
+        for device in expired {
+            if let Some(pending) = self.pending_responses.remove(&device) {
+                self.cancel_response(pending);
             }
         }
     }
@@ -323,9 +373,12 @@ impl BackgroundRuntime {
             Err(error) => return format!("Background command failed: {error}\n"),
         };
         let (source, mode, thumbnail) = effective.description();
-        let registered = controller_step(&self.access.shared.controller, |controller| {
-            controller.is_registered(device)
-        });
+        let registered = self
+            .access
+            .shared
+            .controller
+            .snapshot()
+            .is_registered(device);
         let registered = match registered {
             true => "yes",
             false => "no",
@@ -452,9 +505,43 @@ impl BackgroundRuntime {
                 }
             }
         };
-        self.access
-            .phone
-            .try_send(PhoneCommand::new(device, action))
+        let generation = self
+            .access
+            .shared
+            .controller
+            .snapshot()
+            .registered_device(&device)
+            .map(|registered| registered.session_generation)
+            .ok_or_else(|| ServerError::DeviceNotConnected(device.clone()))?;
+        let target = StationSessionTarget::new(device.clone(), generation);
+        let routing = PhoneServiceRouting {
+            application_id: ApplicationId::new(PHONE_BACKGROUND_APPLICATION_ID),
+            line_instance: LineInstance::new(0),
+            call_reference: CallReference::new(0),
+            transaction_id,
+        };
+        if let Some(previous) = self.pending_responses.remove(&device) {
+            self.cancel_response(previous);
+        }
+        let pending = PendingBackgroundResponse {
+            target: target.clone(),
+            routing,
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+        };
+        match self
+            .access
+            .handle
+            .block_on(self.access.phone.send_session_confirmed(target, action))
+        {
+            Ok(()) => {
+                self.pending_responses.insert(device, pending);
+                Ok(())
+            }
+            Err(error) => {
+                self.cancel_response(pending);
+                Err(error)
+            }
+        }
     }
 
     fn next_transaction_id(&mut self) -> TransactionId {
@@ -593,11 +680,12 @@ fn resolve_configured_background(
 }
 
 fn registered_device_type(access: &Access, device: &DeviceId) -> Option<DeviceType> {
-    controller_step(&access.shared.controller, |controller| {
-        controller
-            .registered_device(device)
-            .map(|registered| registered.registration.device_type)
-    })
+    access
+        .shared
+        .controller
+        .snapshot()
+        .registered_device(device)
+        .map(|registered| registered.registration.device_type)
 }
 
 fn same_resources(

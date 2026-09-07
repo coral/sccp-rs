@@ -30,6 +30,17 @@ pub struct BlfEvent {
     generation: u64,
 }
 
+impl BlfEvent {
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+}
+
 struct Entry<Subscription> {
     generation: u64,
     _subscription: Subscription,
@@ -50,7 +61,7 @@ struct InitialGate {
 /// Owns all active monitored-button subscriptions.
 pub struct BlfSubscriptions<Provider: HintProvider> {
     provider: Provider,
-    events: mpsc::UnboundedSender<BlfEvent>,
+    events: Arc<dyn Fn(BlfEvent) + Send + Sync>,
     entries: HashMap<BlfKey, Entry<Provider::Subscription>>,
     retries: HashMap<BlfKey, RetryState>,
     next_generation: u64,
@@ -58,6 +69,18 @@ pub struct BlfSubscriptions<Provider: HintProvider> {
 
 impl<Provider: HintProvider> BlfSubscriptions<Provider> {
     pub fn new(provider: Provider, events: mpsc::UnboundedSender<BlfEvent>) -> Self {
+        Self::with_sink(
+            provider,
+            Arc::new(move |event| {
+                let _ = events.send(event);
+            }),
+        )
+    }
+
+    pub(crate) fn with_sink(
+        provider: Provider,
+        events: Arc<dyn Fn(BlfEvent) + Send + Sync>,
+    ) -> Self {
         Self {
             provider,
             events,
@@ -79,10 +102,12 @@ impl<Provider: HintProvider> BlfSubscriptions<Provider> {
             device_id,
             instance: definition.instance,
         };
-        self.entries.remove(&key);
-
         let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .ok_or(BlfSubscriptionError::GenerationExhausted)?;
+        self.entries.remove(&key);
         let gate = Arc::new(Mutex::new(InitialGate {
             initializing: true,
             pending: None,
@@ -95,10 +120,16 @@ impl<Provider: HintProvider> BlfSubscriptions<Provider> {
                 .lock()
                 .expect("BLF initialization lock poisoned");
             if gate.initializing {
-                gate.pending = Some(update);
+                if gate
+                    .pending
+                    .as_ref()
+                    .is_none_or(|pending| pending.state.raw() >= 0)
+                {
+                    gate.pending = Some(update);
+                }
                 return;
             }
-            let _ = events.send(normalize_event(&callback_key, generation, update));
+            events(normalize_event(&callback_key, generation, update));
         });
 
         let subscription = match self.provider.subscribe(target, callback) {
@@ -128,7 +159,7 @@ impl<Provider: HintProvider> BlfSubscriptions<Provider> {
 
         let mut gate = gate.lock().expect("BLF initialization lock poisoned");
         let initial = gate.pending.take().unwrap_or(snapshot);
-        let _ = self.events.send(normalize_event(&key, generation, initial));
+        (self.events)(normalize_event(&key, generation, initial));
         gate.initializing = false;
         self.retries.remove(&key);
         Ok(())
@@ -164,6 +195,15 @@ impl<Provider: HintProvider> BlfSubscriptions<Provider> {
         }
         self.entries.remove(&key);
         self.record_failure(key);
+    }
+
+    /// Schedules a retry when the owner's callback capacity cannot yet admit a watcher.
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
+    pub(crate) fn defer(&mut self, device_id: DeviceId, instance: u32) {
+        self.record_failure(BlfKey {
+            device_id,
+            instance,
+        });
     }
 
     fn record_failure(&mut self, key: BlfKey) {
@@ -215,6 +255,8 @@ impl<Provider: HintProvider> BlfSubscriptions<Provider> {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum BlfSubscriptionError {
+    #[error("hint subscription generations exhausted")]
+    GenerationExhausted,
     #[error("hint service failed: {0}")]
     Provider(String),
 }
@@ -283,7 +325,7 @@ mod tests {
 
     struct FakeState {
         snapshot: ExtensionState,
-        update_during_lookup: Option<HintSnapshot>,
+        updates_during_lookup: Vec<HintSnapshot>,
         callback: Option<HintCallback>,
         targets: Vec<HintTarget>,
     }
@@ -306,12 +348,14 @@ mod tests {
                 state.targets.push(target.clone());
                 (
                     state.callback.clone(),
-                    state.update_during_lookup.take(),
+                    std::mem::take(&mut state.updates_during_lookup),
                     state.snapshot,
                 )
             };
-            if let (Some(callback), Some(update)) = (callback, update) {
-                callback(update);
+            if let Some(callback) = callback {
+                for update in update {
+                    callback(update);
+                }
             }
             Ok(Some(HintSnapshot {
                 target: target.clone(),
@@ -357,7 +401,7 @@ mod tests {
     ) {
         let state = Arc::new(Mutex::new(FakeState {
             snapshot,
-            update_during_lookup: during_lookup,
+            updates_during_lookup: during_lookup.into_iter().collect(),
             callback: None,
             targets: Vec::new(),
         }));
@@ -419,6 +463,29 @@ mod tests {
     }
 
     #[test]
+    fn terminal_hint_during_initialization_is_not_overwritten_by_a_late_snapshot() {
+        let (mut subscriptions, mut events, state, _) = setup(ExtensionState::IDLE, None);
+        state.lock().unwrap().updates_during_lookup = vec![
+            update(ExtensionState::REMOVED),
+            update(ExtensionState::IDLE),
+        ];
+        let device = DeviceId::new("SEP001122334455").unwrap();
+        subscriptions
+            .subscribe(device.clone(), &definition(), &target())
+            .unwrap();
+        let event = events.try_recv().unwrap();
+        assert!(event.is_terminal());
+        assert_eq!(event.state, BlfState::Unknown);
+        subscriptions.retry_terminal(&event);
+        assert!(!subscriptions.is_current(&event));
+        assert!(subscriptions.retry_due(
+            &device,
+            definition().instance,
+            Instant::now() + Duration::from_secs(2)
+        ));
+    }
+
+    #[test]
     fn replacing_and_removing_a_device_invalidates_queued_generations() {
         let (mut subscriptions, mut events, _, drops) = setup(ExtensionState::IDLE, None);
         let device = DeviceId::new("SEP001122334455").unwrap();
@@ -433,6 +500,7 @@ mod tests {
         let current = events.try_recv().unwrap();
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(!subscriptions.is_current(&old));
+        assert_ne!(old.generation(), current.generation());
         assert!(subscriptions.is_current(&current));
 
         subscriptions.remove_device(&device);
@@ -484,6 +552,7 @@ mod tests {
         state.lock().unwrap().callback.as_ref().unwrap()(update(ExtensionState::REMOVED));
         let removed = events.try_recv().unwrap();
         assert_eq!(removed.state, BlfState::Unknown);
+        assert!(removed.is_terminal());
         subscriptions.retry_terminal(&removed);
 
         assert!(!subscriptions.is_current(&removed));

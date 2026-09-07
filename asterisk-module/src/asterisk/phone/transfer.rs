@@ -6,8 +6,8 @@ use super::{
     PhoneCommandAction, Tone, TransferCancellationReason, TransferCompletion,
     TransferCompletionKind, TransferCompletionPlan, TransferConsultationRequest, TransferMode,
     TransferPhase, TransferRejection, TransferSetupMilestone, TransferTrigger, ast_log,
-    controller_step, execute_cleanup_effects, execute_handset_effect, execute_one_effect,
-    handle_handset_hangup, native_channel, preferred_codec, remove_channel, retain_two_channels,
+    execute_cleanup_effects, execute_handset_effect, execute_one_effect, handle_handset_hangup,
+    native_channel, preferred_codec, remove_channel,
 };
 use crate::runtime::backend::ChannelBackend as _;
 
@@ -17,23 +17,22 @@ pub(super) async fn handle_transfer_soft_key(
     reported_call_id: Option<CallId>,
     line_instance: u32,
 ) {
-    let existing = controller_step(&access.shared.controller, |controller| {
-        controller
-            .transfer_transaction_for_device(&device_id)
-            .cloned()
-    });
+    let existing = access
+        .shared
+        .controller
+        .snapshot()
+        .transfer_transaction_for_device(&device_id)
+        .cloned();
     if let Some(existing) = existing {
         let feedback_call_id = reported_call_id
             .filter(|call_id| call_id.0 != 0)
             .or_else(|| existing.consultation.map(|leg| leg.handset_call_id))
             .unwrap_or(existing.source.handset_call_id);
-        let plan = controller_step(&access.shared.controller, |controller| {
-            controller.complete_device_transfer(
-                &device_id,
-                reported_call_id,
-                TransferTrigger::TransferKey,
-            )
-        });
+        let plan = access
+            .shared
+            .controller
+            .complete_device_transfer(&device_id, reported_call_id, TransferTrigger::TransferKey)
+            .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
         match plan {
             Ok(plan) => execute_transfer_completion(access, plan).await,
             Err(rejection) => {
@@ -60,20 +59,23 @@ pub(super) async fn handle_transfer_soft_key(
         return;
     };
     let consultation_call_id = access.phone.reserve_call_id();
-    let result = controller_step(&access.shared.controller, |controller| {
-        let effects = controller.begin_transfer(TransferConsultationRequest {
+    let result = access
+        .shared
+        .controller
+        .prepare_transfer(TransferConsultationRequest {
             source_call_id: call_id,
             consultation_call_id,
             binding,
             codec,
             complete_on_hangup,
             now: Instant::now(),
+        })
+        .unwrap_or_else(|_| {
+            (
+                Err(crate::call::transfer::TransferRejection::Conflict),
+                None,
+            )
         });
-        let transaction = controller
-            .transfer_transaction(consultation_call_id)
-            .cloned();
-        (effects, transaction)
-    });
     let (effects, transaction) = result;
     let effects = match effects {
         Ok(effects) => effects,
@@ -200,9 +202,11 @@ pub(super) fn transfer_generation_is_active(
     access: &Access,
     transaction: &crate::call::transfer::TransferTransaction,
 ) -> bool {
-    controller_step(&access.shared.controller, |controller| {
-        controller.transfer_generation_is_active(&transaction.device_id, transaction.id)
-    })
+    access
+        .shared
+        .controller
+        .snapshot()
+        .transfer_generation_is_active(&transaction.device_id, transaction.id)
 }
 
 pub(super) fn record_transfer_setup_milestone(
@@ -210,11 +214,12 @@ pub(super) fn record_transfer_setup_milestone(
     transaction: &crate::call::transfer::TransferTransaction,
     milestone: TransferSetupMilestone,
 ) -> bool {
-    controller_step(&access.shared.controller, |controller| {
-        controller
-            .transfer_setup_completed(&transaction.device_id, transaction.id, milestone)
-            .is_ok()
-    })
+    access
+        .shared
+        .controller
+        .transfer_setup_completed(&transaction.device_id, transaction.id, milestone)
+        .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict))
+        .is_ok()
 }
 
 pub(super) async fn compensate_unrecorded_transfer_setup(
@@ -283,13 +288,15 @@ pub(super) async fn abort_transfer_execution(
     access: &Access,
     transaction: &crate::call::transfer::TransferTransaction,
 ) {
-    let outcome = controller_step(&access.shared.controller, |controller| {
-        controller.abort_transfer(
+    let outcome = access
+        .shared
+        .controller
+        .abort_transfer(
             &transaction.device_id,
             transaction.id,
             TransferCancellationReason::ConsultationFailure,
         )
-    });
+        .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
     if let Ok(outcome) = outcome {
         let consultation_created = outcome
             .transaction
@@ -303,14 +310,16 @@ pub(super) async fn abort_transfer_execution(
 }
 
 pub(super) async fn handle_direct_transfer(access: &Access, device_id: DeviceId) {
-    let (plan, active_call) = controller_step(&access.shared.controller, |controller| {
-        (
-            controller.direct_transfer(&device_id),
-            controller
-                .registered_device(&device_id)
-                .and_then(|device| device.active_call()),
-        )
-    });
+    let (plan, active_call) = access
+        .shared
+        .controller
+        .prepare_direct_transfer(device_id.clone())
+        .unwrap_or_else(|_| {
+            (
+                Err(crate::call::transfer::TransferRejection::Conflict),
+                None,
+            )
+        });
     match plan {
         Ok(plan) => execute_transfer_completion(access, plan).await,
         Err(rejection) => {
@@ -323,20 +332,18 @@ pub(super) async fn handle_direct_transfer(access: &Access, device_id: DeviceId)
 
 pub(super) async fn execute_transfer_completion(access: &Access, plan: TransferCompletionPlan) {
     let completion = plan.completion;
-    if !controller_step(&access.shared.controller, |controller| {
-        controller.transfer_generation_is_active(&completion.device_id, completion.transaction_id)
-    }) {
+    if !access
+        .shared
+        .controller
+        .snapshot()
+        .transfer_generation_is_active(&completion.device_id, completion.transaction_id)
+    {
         return;
     }
     debug_assert!(matches!(
         plan.effects.as_slice(),
         [DriverEffect::Backend(PbxEffect::Transfer { operation })] if operation == &completion
     ));
-    let channels = retain_two_channels(
-        access,
-        completion.source.pbx_call_id,
-        completion.consultation.pbx_call_id,
-    );
     let _ = access
         .phone
         .send(PhoneCommand::new(
@@ -360,32 +367,41 @@ pub(super) async fn execute_transfer_completion(access: &Access, plan: TransferC
         ),
     );
 
+    let worker = match access.shared.workers.try_reserve() {
+        Ok(worker) => worker,
+        Err(_) => {
+            finish_transfer_completion(
+                access,
+                completion,
+                native_channel::AttendedTransferResult::Failed,
+                Duration::ZERO,
+            )
+            .await;
+            return;
+        }
+    };
+    let started = Instant::now();
     let task_access = access.clone();
-    access.handle.spawn(async move {
-        let started = Instant::now();
-        let result = if let Some((source, consultation)) = channels {
-            let mut native = tokio::task::spawn_blocking(move || unsafe {
-                native_channel::attended_transfer(
-                    source.resource().as_non_null(),
-                    consultation.resource().as_non_null(),
-                )
-            });
-            tokio::select! {
-                result = &mut native => result.unwrap_or(native_channel::AttendedTransferResult::Failed),
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    ast_log(
-                        LogLevel::Warning,
-                        &format!(
-                            "transfer {} for device {} is still pending in Asterisk after 5 seconds",
-                            completion.transaction_id.0,
-                            completion.device_id,
-                        ),
-                    );
-                    native.await.unwrap_or(native_channel::AttendedTransferResult::Failed)
-                }
+    worker.spawn(async move {
+        let backend = AsteriskBackend::new(&task_access);
+        let native = execute_one_effect(
+            &task_access,
+            &backend,
+            0,
+            DriverEffect::Backend(PbxEffect::Transfer { operation: completion.clone() }),
+        );
+        tokio::pin!(native);
+        let outcome = tokio::select! {
+            result = &mut native => result,
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                ast_log(LogLevel::Warning, &format!("transfer {} for device {} is still pending in Asterisk after 5 seconds", completion.transaction_id.0, completion.device_id));
+                native.await
             }
+        };
+        let result = if outcome.is_ok() {
+            native_channel::AttendedTransferResult::Success
         } else {
-            native_channel::AttendedTransferResult::Invalid
+            native_channel::AttendedTransferResult::Failed
         };
         finish_transfer_completion(&task_access, completion, result, started.elapsed()).await;
     });
@@ -397,9 +413,11 @@ async fn finish_transfer_completion(
     result: native_channel::AttendedTransferResult,
     elapsed: Duration,
 ) {
-    let active = controller_step(&access.shared.controller, |controller| {
-        controller.transfer_generation_is_active(&completion.device_id, completion.transaction_id)
-    });
+    let active = access
+        .shared
+        .controller
+        .snapshot()
+        .transfer_generation_is_active(&completion.device_id, completion.transaction_id);
     if !active {
         return;
     }
@@ -418,9 +436,11 @@ async fn finish_transfer_completion(
     );
 
     if result == native_channel::AttendedTransferResult::Success {
-        let outcome = controller_step(&access.shared.controller, |controller| {
-            controller.transfer_succeeded(&completion.device_id, completion.transaction_id)
-        });
+        let outcome = access
+            .shared
+            .controller
+            .transfer_succeeded(&completion.device_id, completion.transaction_id)
+            .unwrap_or_else(|_| None);
         if let Some(outcome) = outcome {
             execute_cleanup_effects(access, outcome.effects).await;
         }
@@ -429,13 +449,15 @@ async fn finish_transfer_completion(
         return;
     }
 
-    let outcome = controller_step(&access.shared.controller, |controller| {
-        controller.abort_transfer(
+    let outcome = access
+        .shared
+        .controller
+        .abort_transfer(
             &completion.device_id,
             completion.transaction_id,
             TransferCancellationReason::BackendFailure,
         )
-    });
+        .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
     if let Ok(outcome) = outcome {
         let deferred = outcome.transaction.deferred_action;
         execute_cleanup_effects(access, outcome.effects).await;
@@ -460,9 +482,11 @@ pub(super) async fn cancel_transfer(
     transaction: crate::call::transfer::TransferTransaction,
     reason: TransferCancellationReason,
 ) -> bool {
-    let outcome = controller_step(&access.shared.controller, |controller| {
-        controller.abort_transfer(&transaction.device_id, transaction.id, reason)
-    });
+    let outcome = access
+        .shared
+        .controller
+        .abort_transfer(&transaction.device_id, transaction.id, reason)
+        .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
     let Ok(outcome) = outcome else {
         return false;
     };
@@ -481,9 +505,12 @@ pub(super) async fn handle_transfer_hangup(
     call_id: CallId,
     physical: bool,
 ) -> bool {
-    let transaction = controller_step(&access.shared.controller, |controller| {
-        controller.transfer_transaction(call_id).cloned()
-    });
+    let transaction = access
+        .shared
+        .controller
+        .snapshot()
+        .transfer_transaction(call_id)
+        .cloned();
     let Some(transaction) = transaction else {
         return false;
     };
@@ -493,9 +520,11 @@ pub(super) async fn handle_transfer_hangup(
         } else {
             DeferredTransferAction::EndCall
         };
-        let deferred = controller_step(&access.shared.controller, |controller| {
-            controller.defer_transfer_action(&transaction.device_id, transaction.id, action)
-        });
+        let deferred = access
+            .shared
+            .controller
+            .defer_transfer_action(&transaction.device_id, transaction.id, action)
+            .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
         if deferred.is_ok() {
             let _ = access
                 .phone
@@ -516,9 +545,11 @@ pub(super) async fn handle_transfer_hangup(
             .consultation
             .is_some_and(|leg| leg.handset_call_id == call_id)
     {
-        let plan = controller_step(&access.shared.controller, |controller| {
-            controller.complete_transfer(&device_id, call_id, TransferTrigger::ConsultationHangup)
-        });
+        let plan = access
+            .shared
+            .controller
+            .complete_transfer(&device_id, call_id, TransferTrigger::ConsultationHangup)
+            .unwrap_or_else(|_| Err(crate::call::transfer::TransferRejection::Conflict));
         if let Ok(plan) = plan {
             execute_transfer_completion(access, plan).await;
             return true;

@@ -2,8 +2,8 @@
 
 use super::{
     AsteriskBackend, AsteriskBackendError, CallFeatureProvider as _, CallServiceBackend,
-    ChannelBinding, MutexExt as _, ParkingOperation, PickupOperation, PickupOutcome,
-    native_bridging, native_pickup_result,
+    MutexExt as _, ParkingOperation, PickupOperation, PickupOutcome, native_bridging,
+    native_pickup_result,
 };
 
 impl CallServiceBackend for AsteriskBackend<'_> {
@@ -36,12 +36,18 @@ impl CallServiceBackend for AsteriskBackend<'_> {
         };
         let (replacement, parties) =
             native_pickup_result(result).map_err(AsteriskBackendError::CallFeature)?;
-        let replaced = self
-            .access
-            .shared
-            .channels
-            .lock_unpoisoned()
-            .insert(call_id, ChannelBinding::new(replacement));
+        let replaced = {
+            let mut channels = self.access.shared.channels.lock_unpoisoned();
+            let current = channels
+                .get(&call_id)
+                .filter(|binding| !binding.is_closed())
+                .ok_or(AsteriskBackendError::CallUnavailable {
+                    operation: "pickup replacement",
+                    call_id,
+                })?;
+            let replacement = current.replacement(replacement);
+            channels.insert(call_id, replacement)
+        };
         if let Some(replaced) = replaced {
             drop(replaced.close());
         }
@@ -54,25 +60,61 @@ impl CallServiceBackend for AsteriskBackend<'_> {
                 self.with_call_feature_channel("park call", *call_id, |channel| {
                     let unique_id = native_bridging::parking_peer_uniqueid(channel)
                         .map_err(AsteriskBackendError::CallFeature)?;
-                    if let Some(unique_id) = unique_id {
-                        let mut pending = self.access.shared.pending_parks.lock_unpoisoned();
-                        if let Some(attempt) = pending
-                            .values_mut()
-                            .find(|attempt| attempt.pbx_id == *call_id)
-                        {
-                            attempt.parkee_unique_id = Some(unique_id);
-                        }
-                    }
+                    let unique_id = unique_id.ok_or(AsteriskBackendError::CallUnavailable {
+                        operation: "park peer identity",
+                        call_id: *call_id,
+                    })?;
+                    let admission = self
+                        .access
+                        .shared
+                        .parking_events
+                        .reserve(unique_id.clone())
+                        .map_err(|_| AsteriskBackendError::CallUnavailable {
+                            operation: "park completion admission",
+                            call_id: *call_id,
+                        })?;
+                    self.access
+                        .shared
+                        .controller
+                        .set_park_peer(*call_id, unique_id)
+                        .map_err(|_| AsteriskBackendError::CallUnavailable {
+                            operation: "park peer identity",
+                            call_id: *call_id,
+                        })?;
                     self.call_features
                         .park(channel, lot.as_deref())
-                        .map_err(AsteriskBackendError::CallFeature)
+                        .map_err(AsteriskBackendError::CallFeature)?;
+                    admission.commit();
+                    Ok(())
                 })
             }
             ParkingOperation::Retrieve { call_id, lot, slot } => {
                 self.with_call_feature_channel("retrieve parked call", *call_id, |channel| {
+                    let snapshot = self.access.shared.controller.snapshot();
+                    let unique_id = snapshot
+                        .pending_retrievals()
+                        .values()
+                        .find(|attempt| attempt.pbx_id == *call_id)
+                        .and_then(|attempt| snapshot.parking().call(&attempt.lot, attempt.slot))
+                        .map(|parked| parked.parkee_unique_id.clone())
+                        .ok_or(AsteriskBackendError::CallUnavailable {
+                            operation: "parking retrieval identity",
+                            call_id: *call_id,
+                        })?;
+                    let admission = self
+                        .access
+                        .shared
+                        .parking_events
+                        .reserve(unique_id)
+                        .map_err(|_| AsteriskBackendError::CallUnavailable {
+                            operation: "parking retrieval completion admission",
+                            call_id: *call_id,
+                        })?;
                     self.call_features
                         .retrieve(channel, lot.as_deref(), slot)
-                        .map_err(AsteriskBackendError::CallFeature)
+                        .map_err(AsteriskBackendError::CallFeature)?;
+                    admission.commit();
+                    Ok(())
                 })
             }
         }

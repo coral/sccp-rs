@@ -3,44 +3,42 @@
 use crate::asterisk::boundary::{MutexExt, RwLockExt};
 use crate::asterisk::phone::{
     RuntimeDndMutation, RuntimeDndMutationError, begin_parking_retrieval, cancel_no_answer_timer,
-    clear_no_answer_route, configured_mobility_button, execute_dnd_mutation,
-    execute_dnd_mutation_serialized, expire_forwarding_entries, expire_no_answer_routes,
-    expire_parking_attempts, handle_parking_event, handle_phone_event, log_feature_store_error,
-    mobility_device_registered, publish_ami_event, publish_device_features,
-    publish_feature_changes, remove_conference_participant, set_conference_participant_moderator,
-    set_conference_participant_muted, show_conference_list, update_device_features_locked,
+    execute_dnd_mutation, execute_dnd_mutation_serialized, execute_forwarding_expiry,
+    execute_no_answer_route, execute_parking_update, handle_parking_event, handle_phone_event,
+    log_feature_store_error, mobility_device_registered, publish_ami_event,
+    publish_device_features, publish_feature_changes, remove_conference_participant,
+    set_conference_participant_moderator, set_conference_participant_muted, show_conference_list,
+    update_device_features,
 };
 use crate::asterisk::{
-    AbortHandle, AddressSelectionPolicy, AmiConferenceCommand, AmiEventError, AmiEventPublisher,
-    AmiParkingCommand, AmiRecordingCommand, AnnouncementAdapter, AnnouncementCall,
-    AnnouncementFailureStage, AnnouncementGeneration, AppearanceRingMode, AppearanceRingSummary,
-    Arc, AsteriskCallCompletion, AsteriskCallFeatures, AsteriskChannel, AsteriskChannelMetadata,
-    AsteriskDatabase, AsteriskDialplan, AsteriskHints, AsteriskHttp, AsteriskManager,
-    AsteriskParking, AsteriskPartyUpdates, AsteriskRecording, AsteriskRegistrationExtensions,
-    AsyncMutex, AtomicU64, AudioProcessingPolicy, AutoAnswerMode, BTreeMap, BTreeSet,
-    BargeBridgeSession, BargeOperation, BlfEvent, BlfSubscriptions, BridgeBackend, BridgeOperation,
-    BridgeSession, Builder, ButtonDefinition, CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, CString,
-    CallDirection, CallFeatureError, CallId, CallInfo, CallMetadata, CallSelectionOrder,
-    CallServiceBackend, CallState, CallStatus, CallTransition, CallTransitionProgress,
-    CalledPartyOverride, CalledPartyProvider, CalledPartyProviderError, ChannelAppearanceSnapshot,
-    ChannelBackend, ChannelDirectionSummary, ChannelMediaStateSummary, ChannelMetadataError,
-    ChannelQueryLookupError, ChannelQueryProvider, ChannelQuerySnapshot, ChannelQueryTarget,
-    ChannelStateSummary, Codec, CodecPreferenceContext, CodecPreferenceProvider,
-    CodecPreferenceProviderError, CodecPreferenceRejection, ConferenceAnnouncement,
-    ConferenceAnnouncementOperation, ConferenceDestinationOperation, ConferenceEndRejection,
-    ConferenceId, ConferenceParticipantRejection, ConferenceParticipantStatus, ConferencePhase,
-    ConferenceStatus, ConferenceTaskCancellation, ConferenceTaskRegistry, ConferenceTaskStartError,
-    ConfigReconciliation, ConfigReconciliationTrigger, ConfigurationProvider,
-    ConfiguredChannelMetadata, ConnectedLineSource, ConnectedLineUpdate, ControlOperation,
-    ControlOutcome, ControlProvider, ControlProviderError, Controller,
-    DEFAULT_AUDIO_MAX_FRAMES_PER_PACKET, DEFAULT_AUDIO_PACKET_MS, DeviceCallSummary,
-    DeviceDndSummary, DeviceFeatureState, DeviceFeatureSummary, DeviceId, DeviceQueryLookupError,
-    DeviceQueryProvider, DeviceQuerySnapshot, DeviceQueryTarget, DeviceState, DialplanRegistration,
-    Digit, DirectMediaPolicy, DirectoryProvider, DirectoryProviderError, DirectoryRecord, DndMode,
-    DriverEffect, DtmfMode, Duration, EffectExecutionError, ExternalAddressCache,
-    FeatureControlMutation, FeatureControlOutcome, FeatureControlProvider,
-    FeatureControlProviderError, FeatureStore, FeatureStoreError, ForwardingDestination,
-    ForwardingEntryRegistry, ForwardingKind, ForwardingOperation, ForwardingRouteReason, Handle,
+    AddressSelectionPolicy, AmiConferenceCommand, AmiEventError, AmiParkingCommand,
+    AmiRecordingCommand, AnnouncementAdapter, AnnouncementCall, AnnouncementFailureStage,
+    AnnouncementGeneration, AppearanceRingMode, AppearanceRingSummary, Arc, AsteriskCallCompletion,
+    AsteriskCallFeatures, AsteriskChannel, AsteriskChannelMetadata, AsteriskDatabase,
+    AsteriskDialplan, AsteriskHints, AsteriskHttp, AsteriskManager, AsteriskParking,
+    AsteriskPartyUpdates, AsteriskRecording, AudioProcessingPolicy, AutoAnswerMode, BTreeMap,
+    BTreeSet, BargeBridgeSession, BargeOperation, BridgeBackend, BridgeOperation, BridgeSession,
+    Builder, ButtonDefinition, CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, CString, CallDirection,
+    CallFeatureError, CallId, CallMetadata, CallSelectionOrder, CallServiceBackend, CallState,
+    CallStatus, CallTransition, CallTransitionProgress, CalledPartyOverride, CalledPartyProvider,
+    CalledPartyProviderError, ChannelAppearanceSnapshot, ChannelBackend, ChannelDirectionSummary,
+    ChannelMediaStateSummary, ChannelMetadataError, ChannelQueryLookupError, ChannelQueryProvider,
+    ChannelQuerySnapshot, ChannelQueryTarget, ChannelStateSummary, Codec, CodecPreferenceContext,
+    CodecPreferenceProvider, CodecPreferenceProviderError, CodecPreferenceRejection,
+    ConferenceAnnouncement, ConferenceAnnouncementOperation, ConferenceDestinationOperation,
+    ConferenceEndRejection, ConferenceId, ConferenceParticipantRejection,
+    ConferenceParticipantStatus, ConferencePhase, ConferenceStatus, ConferenceTaskCancellation,
+    ConferenceTaskRegistry, ConferenceTaskStartError, ConfigReconciliation,
+    ConfigReconciliationTrigger, ConfigurationProvider, ConfiguredChannelMetadata,
+    ConnectedLineSource, ConnectedLineUpdate, ControlOperation, ControlOutcome, ControlProvider,
+    ControlProviderError, Controller, DEFAULT_AUDIO_MAX_FRAMES_PER_PACKET, DEFAULT_AUDIO_PACKET_MS,
+    DeviceCallSummary, DeviceDndSummary, DeviceFeatureState, DeviceFeatureSummary, DeviceId,
+    DeviceQueryLookupError, DeviceQueryProvider, DeviceQuerySnapshot, DeviceQueryTarget,
+    DeviceState, DialplanRegistration, Digit, DirectMediaPolicy, DirectoryProvider,
+    DirectoryProviderError, DirectoryRecord, DndMode, DriverEffect, DtmfMode, Duration,
+    EffectExecutionError, ExternalAddressCache, FeatureControlMutation, FeatureControlOutcome,
+    FeatureControlProvider, FeatureControlProviderError, FeatureStore, FeatureStoreError,
+    ForwardingDestination, ForwardingKind, ForwardingOperation, ForwardingRouteReason, Handle,
     HandsetCallIndication, HandsetCallIndicationProvider, HandsetCallIndicationProviderError,
     HandsetEffect, HandsetMessageOperation, HandsetMessageProvider, HandsetMessageProviderError,
     HashMap, HashSet, HttpRegistration, Instant, InventoryProvider, InventoryProviderError,
@@ -48,33 +46,29 @@ use crate::asterisk::{
     JoinHandle, LineAppearanceSnapshot, LineBinding, LineCallSummary, LineInstance,
     LineQueryLookupError, LineQueryProvider, LineQuerySnapshot, LineQueryTarget, LogLevel,
     MANAGER_CONTROL_DELIVERY_TIMEOUT, MANAGER_CONTROL_TIMEOUT, MAX_RESTORE_ATTEMPTS, MODULE,
-    ManagementBackend, ManagementEvent, ManagerActionRegistration, MediaAnchorReason,
-    MediaAnchorRegistry, MediaAnchorRestores, MediaBackend, MediaDirection, MediaEndpoint,
-    MediaEndpointAddress, MediaKind, MediaStatisticsStatus, MediaStreamState, MediaStreamStatus,
-    MediaTrafficClass, MessageTarget, MobilityRegistry, MobilitySlot, ModuleConfig,
+    ManagementBackend, ManagementEvent, ManagerActionRegistration, MediaAnchorReason, MediaBackend,
+    MediaDirection, MediaEndpoint, MediaEndpointAddress, MediaKind, MediaStatisticsStatus,
+    MediaStreamState, MediaStreamStatus, MediaTrafficClass, MessageTarget, ModuleConfig,
     MultimediaReceiveDescriptor, MultimediaTransmitControl, MultimediaTransmitDescriptor, Mutex,
-    MwiSubscriptionChange, NORMAL_CLEARING, NameCharset, NatMode, NoAnswerTimerRegistry, NonNull,
-    NumberPlan, OutboundMediaMode, PARKING_CONFIRM_TIMEOUT, PARKING_NOTIFICATION_TIME,
-    ParkingEvent, ParkingOperation, ParkingRegistry, ParkingRejection, ParkingSubscription,
-    ParticipantId, PartyIdentity, PartySnapshot, PartyUpdateError, PbxAudioFormat, PbxBackendError,
-    PbxBridgeId, PbxCallId, PbxEffect, PbxServiceCapabilities, PbxVideoFormat, PhoneCallState,
-    PhoneCommand, PhoneCommandAction, PhoneEvent, PickupOperation, PickupOutcome, Presentation,
-    ProtocolVersion, REMOTE_HANGUP_PRESENTATION_TIME, REQUESTED_CHANNEL_UNAVAILABLE,
-    ReceiveChannelPurpose, ReceiveTransmit, RecordingButtonState, RecordingCallback,
-    RecordingDirection, RecordingError, RecordingEvent, RecordingProvider, RecordingRegistryError,
-    RecordingSession, RecordingSessionControl, RecordingState, RecordingTarget,
-    RecordingTogglePlan, RecordingToggleRejection, RedirectReasonCode, RedirectingUpdate,
-    RegisteredDeviceSummary, RegistrationContextRegistry, RegistrationFallback,
-    RegistrationRegistryError, RegistrationTokenPolicy, ReloadPlan, ReloadSelection,
-    RemoteHangupPlan, ResetMode, ResetTarget, ResetType, ResolvedExternalAddresses, Runtime,
-    RuntimeStatusProvider, RuntimeStatusProviderError, RuntimeStatusSnapshot, RwLock, Semaphore,
-    Server, ServerConfig, ServerHandle, ServerIngress, ServiceControlProvider, ServiceOperation,
-    ServiceOutcome, ServiceProviderError, SharedNoAnswerRoute, SignalingQos, SignalingSocket,
-    StationIo, StationMediaCapabilities, StationTransport, SupplementaryBackend,
-    SystemHostResolver, Tone, TransactionId, TransferCompletion, VideoMode, VoicemailOperation,
-    Weak, adapters, allocate_announcement_generation, announcement_generation_is_current,
-    call_event, canonical_ip_address, compose_channel_metadata, configured_inventory,
-    configured_registration_appearances, controller_step, execute_backend_cleanup_effects,
+    MwiSubscriptionChange, NORMAL_CLEARING, NameCharset, NatMode, NonNull, NumberPlan,
+    OutboundMediaMode, PARKING_CONFIRM_TIMEOUT, PARKING_NOTIFICATION_TIME, ParkingOperation,
+    ParkingRejection, ParkingSubscription, ParticipantId, PartyIdentity, PartySnapshot,
+    PartyUpdateError, PbxAudioFormat, PbxBackendError, PbxBridgeId, PbxCallId, PbxEffect,
+    PbxServiceCapabilities, PbxVideoFormat, PhoneCallState, PhoneCommand, PhoneCommandAction,
+    PhoneEvent, PickupOperation, PickupOutcome, Presentation, ProtocolVersion,
+    REMOTE_HANGUP_PRESENTATION_TIME, REQUESTED_CHANNEL_UNAVAILABLE, ReceiveChannelPurpose,
+    ReceiveTransmit, RecordingButtonState, RecordingCallback, RecordingDirection, RecordingError,
+    RecordingEvent, RecordingProvider, RecordingRegistryError, RecordingSession,
+    RecordingSessionControl, RecordingState, RecordingTarget, RecordingTogglePlan,
+    RecordingToggleRejection, RedirectReasonCode, RedirectingUpdate, RegisteredDeviceSummary,
+    RegistrationFallback, RegistrationTokenPolicy, ReloadPlan, ReloadSelection, RemoteHangupPlan,
+    ResetMode, ResetTarget, ResetType, ResolvedExternalAddresses, Runtime, RuntimeStatusProvider,
+    RuntimeStatusProviderError, RuntimeStatusSnapshot, RwLock, Semaphore, Server, ServerConfig,
+    ServerHandle, ServerIngress, ServiceControlProvider, ServiceOperation, ServiceOutcome,
+    ServiceProviderError, SignalingQos, SignalingSocket, StationIo, StationMediaCapabilities,
+    StationTransport, SupplementaryBackend, SystemHostResolver, Tone, TransferCompletion,
+    VideoMode, VoicemailOperation, Weak, adapters, call_event, canonical_ip_address,
+    compose_channel_metadata, configured_inventory, execute_backend_cleanup_effects,
     forwarding_ui_line_instances, mpsc, native_bridging, native_channel, native_pickup_result,
     negotiate_audio, ordered_recording_start, ordered_recording_stop, parse_requestor_mode,
     pbx_audio_format, plan_recording_toggle, ptr, raw, records_from_config, redirected_call_update,
@@ -91,6 +85,7 @@ use crate::pbx::operations::CallFeatureProvider;
 
 mod backend;
 mod background;
+mod bridge_owner;
 mod channel;
 mod cli;
 mod diagnostics;
@@ -98,8 +93,10 @@ mod dnd_schedule;
 mod lifecycle;
 mod management;
 mod media;
+mod media_owner;
 mod native_support;
 mod presence;
+mod presence_owner;
 mod recording;
 mod services;
 
@@ -158,19 +155,18 @@ pub(super) struct ChannelAllocationRequest<'a> {
 }
 
 pub use backend::{
-    ActiveConferenceAnnouncement, AsteriskBackend, AsteriskBackendError,
-    cancel_conference_announcement, execute_answer_call_transition, execute_call_transition,
-    execute_call_transition_result, execute_cleanup_effects, execute_effects,
-    execute_effects_confirmed, execute_handset_effect, execute_one_effect,
-    execute_remote_hangup_plan, handle_effect_error, handset_effects, send_handset_call_state,
-    shutdown_conferences, shutdown_one_way_microphones, shutdown_remote_hangups,
+    AsteriskBackend, AsteriskBackendError, cancel_conference_announcement,
+    execute_answer_call_transition, execute_call_transition, execute_call_transition_result,
+    execute_cleanup_effects, execute_effects, execute_effects_confirmed, execute_handset_effect,
+    execute_one_effect, execute_remote_hangup_plan, handle_effect_error, handset_effects,
+    send_handset_call_state, shutdown_conferences, shutdown_one_way_microphones,
+    shutdown_remote_hangups,
 };
 pub use channel::{
     ChannelAllocationError, ChannelAllocationOwner, allocate_channel, channel_binding,
     configure_pickup_policy, handset_effect_call_id, preferred_codec, preferred_codec_upgrade,
     preferred_inbound_codec, prepare_channel_allocation_text, queue_unavailable, remove_channel,
-    retain_two_channels, take_pending_retrieval_by_pbx, with_channel, with_channels,
-    with_two_channels,
+    with_channel, with_channels, with_two_channels,
 };
 use channel::{ChannelAvailability, channel_availability};
 pub use cli::{
@@ -184,15 +180,13 @@ pub use lifecycle::{
     reload_selected, reload_sorcery, runtime_line_binding,
 };
 pub use management::{
-    Access, ActiveSystemMessage, ChannelBinding, ChannelOperationPermit, Module, PendingPark,
-    PendingParkingNotification, PendingRetrieval, RuntimeCallSignal,
+    Access, ActiveSystemMessage, ChannelBinding, ChannelOperationPermit, Module, RuntimeCallSignal,
     RuntimeCallSignalDeliveryError, RuntimeCallSignalDeliveryResult, RuntimeCallSignalKind,
-    RuntimeCallSignalQueue, RuntimeCalledPartyProvider, RuntimeChannelQueryProvider,
-    RuntimeCodecPreferenceProvider, RuntimeControlProvider, RuntimeControlRequest,
-    RuntimeDeviceQueryProvider, RuntimeDirectoryProvider, RuntimeFeatureControlProvider,
-    RuntimeHandsetCallIndicationProvider, RuntimeHandsetMessageProvider, RuntimeInventoryProvider,
-    RuntimeLineQueryProvider, RuntimeRegistrationContexts, RuntimeServiceProvider,
-    RuntimeServiceRequest, Shared, execute_forwarding_mutation,
+    RuntimeCalledPartyProvider, RuntimeChannelQueryProvider, RuntimeCodecPreferenceProvider,
+    RuntimeControlProvider, RuntimeControlRequest, RuntimeDeviceQueryProvider,
+    RuntimeDirectoryProvider, RuntimeFeatureControlProvider, RuntimeHandsetCallIndicationProvider,
+    RuntimeHandsetMessageProvider, RuntimeInventoryProvider, RuntimeLineQueryProvider,
+    RuntimeServiceProvider, RuntimeServiceRequest, Shared, execute_forwarding_mutation,
 };
 pub use media::{
     MediaFailureDisposition, configured_audio_processing, configured_audio_traffic_class,
@@ -218,9 +212,10 @@ pub use native_support::{
     requestor_auto_answer_mode, state_from_channel, take_state_from_channel,
 };
 pub use presence::{
-    StagedMwiSubscriptions, device_state, handle_blf_event, install_blf, install_mwi,
-    publish_device_lines, publish_line, retry_blf, uninstall_blf, uninstall_device_blf,
-    uninstall_mwi,
+    StagedMwiSubscriptions, StagedRegistrationContexts, device_state, install_blf, install_mwi,
+    publish_device_lines, publish_line, publish_registration_contexts,
+    retire_registration_contexts, retry_blf, uninstall_device_blf,
+    uninstall_device_blf_for_session, uninstall_mwi,
 };
 pub(super) use recording::RuntimeRecordings;
 use recording::{
@@ -228,9 +223,9 @@ use recording::{
     RuntimeRecordingTrigger, RuntimeRecordingTriggerQueue,
 };
 pub use services::{
-    conference_participant_service_error, execute_service_effects, handle_runtime_hangup_signal,
-    parking_service_error, prune_recording_sessions, restore_system_message, run_call_signals,
-    run_events, send_confirmed_service, toggle_monitor_recording,
+    conference_participant_service_error, execute_service_effects, parking_service_error,
+    prune_recording_sessions, restore_system_message, run_call_signals, run_events,
+    send_confirmed_service, toggle_monitor_recording,
 };
 
 pub(super) fn publish_recording_button_state(

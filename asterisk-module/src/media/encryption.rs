@@ -6,11 +6,7 @@
 //! from an explicit lack of support so required policy cannot silently
 //! downgrade.
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-use std::collections::{HashMap, hash_map::Entry};
 use std::fmt;
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-use std::hash::Hash;
 use std::str::FromStr;
 
 use sccp_protocol::EncryptionMethod;
@@ -196,39 +192,6 @@ pub struct AudioEncryptionAdmission {
     local: LocalEncryptionCapabilities,
 }
 
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-#[derive(Debug)]
-pub(crate) struct AudioEncryptionAdmissions<K> {
-    retained: HashMap<K, AudioEncryptionAdmission>,
-}
-
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-impl<K> Default for AudioEncryptionAdmissions<K> {
-    fn default() -> Self {
-        Self {
-            retained: HashMap::new(),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-impl<K: Eq + Hash> AudioEncryptionAdmissions<K> {
-    pub(crate) fn get_or_try_insert_with<E>(
-        &mut self,
-        call_id: K,
-        resolve: impl FnOnce() -> Result<AudioEncryptionAdmission, E>,
-    ) -> Result<AudioEncryptionAdmission, E> {
-        match self.retained.entry(call_id) {
-            Entry::Occupied(admission) => Ok(admission.get().clone()),
-            Entry::Vacant(vacancy) => Ok(vacancy.insert(resolve()?).clone()),
-        }
-    }
-
-    pub(crate) fn remove(&mut self, call_id: &K) -> Option<AudioEncryptionAdmission> {
-        self.retained.remove(call_id)
-    }
-}
-
 impl AudioEncryptionAdmission {
     pub fn new(
         policy: MediaEncryptionPolicy,
@@ -410,7 +373,6 @@ pub enum MediaEncryptionNegotiationError {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
 
     use super::*;
 
@@ -716,49 +678,5 @@ mod tests {
             assert_eq!(admission.decide(), Ok(MediaEncryptionDecision::Clear));
             assert_eq!(admission.decide(), Ok(MediaEncryptionDecision::Clear));
         }
-    }
-
-    #[test]
-    fn active_call_keeps_its_first_admission_after_inputs_change() {
-        let mut admissions = AudioEncryptionAdmissions::default();
-        let clear = AudioEncryptionAdmission::new(
-            MediaEncryptionPolicy::default(),
-            StationEncryptionCapabilities::NotReported,
-            LocalEncryptionCapabilities::default(),
-        );
-        let required = AudioEncryptionAdmission::new(
-            policy(
-                MediaEncryptionRequirement::Required,
-                &[MediaEncryptionProfile::AES_128_HMAC_SHA1_80],
-            ),
-            StationEncryptionCapabilities::NotReported,
-            LocalEncryptionCapabilities::default(),
-        );
-
-        let first = admissions
-            .get_or_try_insert_with(1_u64, || Ok::<_, ()>(clear))
-            .unwrap();
-        assert_eq!(first.decide(), Ok(MediaEncryptionDecision::Clear));
-
-        let resolved_again = Cell::new(false);
-        let retained = admissions
-            .get_or_try_insert_with(1, || {
-                resolved_again.set(true);
-                Ok::<_, ()>(required.clone())
-            })
-            .unwrap();
-        assert!(!resolved_again.get());
-        assert_eq!(retained.decide(), Ok(MediaEncryptionDecision::Clear));
-
-        let next_call = admissions
-            .get_or_try_insert_with(2, || Ok::<_, ()>(required))
-            .unwrap();
-        assert_eq!(
-            next_call.decide(),
-            Err(MediaEncryptionNegotiationError::CapabilitiesNotReported)
-        );
-
-        assert!(admissions.remove(&1).is_some());
-        assert!(admissions.remove(&1).is_none());
     }
 }

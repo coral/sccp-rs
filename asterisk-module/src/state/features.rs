@@ -26,6 +26,62 @@ pub(crate) fn registration_state_or_fallback<E>(
     }
 }
 
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+#[derive(Clone)]
+pub(crate) enum FeatureMutation {
+    Dnd(crate::call::dnd::DndMutation),
+    TogglePrivacy,
+    SetForwarding {
+        kind: crate::call::forwarding::ForwardingKind,
+        destination: Option<ForwardingDestination>,
+    },
+    ToggleForwarding {
+        kind: crate::call::forwarding::ForwardingKind,
+        default: Option<ForwardingDestination>,
+    },
+    ToggleRecording,
+    ToggleButton(u32),
+}
+
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+impl FeatureMutation {
+    pub(crate) fn apply(self, state: &mut DeviceFeatureState) {
+        use crate::call::forwarding::ForwardingKind;
+        match self {
+            Self::Dnd(mutation) => state.dnd = mutation.apply(state.dnd),
+            Self::TogglePrivacy => state.privacy = !state.privacy,
+            Self::ToggleRecording => state.recording_armed = !state.recording_armed,
+            Self::ToggleButton(instance) => {
+                if let Some(enabled) = state.buttons.get_mut(&instance) {
+                    *enabled = !*enabled;
+                }
+            }
+            Self::SetForwarding { kind, destination } => {
+                *match kind {
+                    ForwardingKind::All => &mut state.forwarding.all,
+                    ForwardingKind::Busy => &mut state.forwarding.busy,
+                    ForwardingKind::NoAnswer => &mut state.forwarding.no_answer,
+                } = destination;
+            }
+            Self::ToggleForwarding { kind, default } => {
+                let value = match kind {
+                    ForwardingKind::All => &mut state.forwarding.all,
+                    ForwardingKind::Busy => &mut state.forwarding.busy,
+                    ForwardingKind::NoAnswer => &mut state.forwarding.no_answer,
+                };
+                *value = if value.is_some() { None } else { default };
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) struct DeviceFeaturePlan {
+    pub expected: Option<DeviceFeatureState>,
+    pub previous: DeviceFeatureState,
+    pub next: DeviceFeatureState,
+}
+
 /// Stores feature overrides relative to configured device defaults.
 ///
 /// Keys use the stable layout `device/<device-id>/<feature>`. Callers must

@@ -32,7 +32,13 @@ fn targeted_reload_guards_one_complete_candidate_before_the_shared_transaction()
     assert_eq!(selected.matches("config_provider").count(), 2);
     assert_eq!(selected.matches(".refresh()").count(), 1);
     assert_eq!(selected.matches(".activated(&access.config())").count(), 1);
-    assert_eq!(selected.matches("reconfigure_station_policy(").count(), 1);
+    let handset = selected
+        .find("reconfigure_station_policy(")
+        .expect("handset preparation");
+    let controller = selected.find(".reload_policy(").expect("controller commit");
+    assert!(handset < controller && controller < commit);
+    assert!(selected.contains("previous.device_definitions()"));
+    assert!(selected.contains("staged_contexts.abort()"));
     assert!(!selected.contains("reconfigure_anonymous_hotline("));
     assert_eq!(selected.matches("Arc::new(next)").count(), 1);
 }

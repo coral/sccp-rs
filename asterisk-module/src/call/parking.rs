@@ -79,7 +79,7 @@ pub struct ParkingChange {
     pub claim: Option<RetrievalClaim>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ParkingRegistry {
     calls: BTreeMap<(String, u32), ParkedCall>,
     claims: HashMap<(String, u32), RetrievalClaim>,

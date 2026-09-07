@@ -2,10 +2,11 @@
 //!
 //! The boxed callback state remains at a stable address for Asterisk. Drop
 //! unsubscribes and joins before releasing it, so no callback can observe
-//! freed line identity.
+//! freed callback state. Callbacks emit owned updates without entering runtime state.
 
 use std::ffi::{CString, c_void};
 use std::ptr;
+use std::sync::Arc;
 
 use crate::asterisk::raw::registry::contain_callback_panic;
 use crate::asterisk::sys;
@@ -13,7 +14,7 @@ use crate::presence::hints::HintError;
 
 struct MwiState {
     subscriber: *mut sys::ast_mwi_subscriber,
-    line: String,
+    update: Arc<dyn Fn(bool) + Send + Sync>,
 }
 
 pub struct NativeMwiSubscription {
@@ -48,19 +49,19 @@ unsafe extern "C" fn mwi_event(
         let state = sys::stasis_message_data(message).cast::<sys::ast_mwi_state>();
         if let Some(state) = state.as_ref() {
             let binding = &*userdata.cast::<MwiState>();
-            crate::asterisk::exports::notify_mwi(&binding.line, state.new_msgs > 0);
+            (binding.update)(state.new_msgs > 0);
         }
     });
 }
 
-pub fn subscribe_mwi(line: String, mailbox: String) -> Result<NativeMwiSubscription, HintError> {
-    if line.contains('\0') {
-        return Err(HintError::InvalidText { field: "line" });
-    }
+pub fn subscribe_mwi(
+    mailbox: String,
+    update: Arc<dyn Fn(bool) + Send + Sync>,
+) -> Result<NativeMwiSubscription, HintError> {
     let mailbox = CString::new(mailbox).map_err(|_| HintError::InvalidText { field: "mailbox" })?;
     let mut state = Box::new(MwiState {
         subscriber: ptr::null_mut(),
-        line,
+        update,
     });
     state.subscriber = unsafe {
         sys::ast_mwi_subscribe_pool(

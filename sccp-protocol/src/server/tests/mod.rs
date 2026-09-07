@@ -17,6 +17,7 @@ use crate::types::{
 
 mod blf;
 mod call;
+mod event_delivery;
 mod media;
 mod registration;
 mod services;

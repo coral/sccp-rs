@@ -2,11 +2,10 @@
 
 use super::super::{
     Access, AmiMediaDirection, AmiMediaKind, AmiMediaState, CallId, DeviceId, DriverEffect,
-    LogLevel, MediaEndpoint, MediaFailureDisposition, MediaStatus, MediaStreamState, NonNull,
-    PhoneDeviceEvent, PhoneDeviceEventKind, TransmitOpenOutcome, ast_log, controller_step,
-    execute_effects, media_event, native_channel, normalize_phone_media_endpoint,
-    normalize_phone_video_endpoint, publish_ami_event, recover_failed_media_transmission,
-    set_remote_video_endpoint, with_channel,
+    LogLevel, MediaEndpoint, MediaFailureDisposition, MediaStatus, NonNull, PhoneDeviceEvent,
+    PhoneDeviceEventKind, TransmitOpenOutcome, ast_log, execute_effects, media_event,
+    native_channel, normalize_phone_media_endpoint, normalize_phone_video_endpoint,
+    publish_ami_event, recover_failed_media_transmission, set_remote_video_endpoint, with_channel,
 };
 use super::{handle_handset_hangup, owned_pbx_call};
 use crate::runtime::controller::VideoFallbackReason;
@@ -19,14 +18,11 @@ async fn commit_transmit_open(
 ) {
     let codec_id = endpoint.codec.wire_value();
     let packet_ms = endpoint.packet_ms;
-    let (actions, accepted) = controller_step(&access.shared.controller, |controller| {
-        let actions =
-            controller.media_transmission_started_for_device(device_id, call_id, endpoint);
-        let accepted = controller.call(call_id).is_some_and(|call| {
-            call.device_id == *device_id && call.audio_transmit == MediaStreamState::Open(endpoint)
-        });
-        (actions, accepted)
-    });
+    let (actions, accepted) = access
+        .shared
+        .controller
+        .accept_media_transmission(device_id, call_id, endpoint)
+        .unwrap_or_else(|_| (Vec::new(), false));
     execute_effects(access, actions).await;
     if accepted {
         publish_ami_event(
@@ -63,16 +59,11 @@ pub(super) async fn handle_media_event(
             Ok(()) => {
                 let codec_id = endpoint.codec.wire_value();
                 let packet_ms = endpoint.packet_ms;
-                let (actions, accepted) =
-                    controller_step(&access.shared.controller, |controller| {
-                        let actions =
-                            controller.media_opened_for_device(&device_id, call_id, endpoint);
-                        let accepted = controller.call(call_id).is_some_and(|call| {
-                            call.device_id == device_id
-                                && call.audio == MediaStreamState::Open(endpoint)
-                        });
-                        (actions, accepted)
-                    });
+                let (actions, accepted) = access
+                    .shared
+                    .controller
+                    .accept_media_receive(device_id.clone(), call_id, endpoint)
+                    .unwrap_or_else(|_| (Vec::new(), false));
                 execute_effects(access, actions).await;
                 if accepted {
                     publish_ami_event(
@@ -121,15 +112,17 @@ pub(super) async fn handle_media_event(
             let pbx_id = owned_pbx_call(access, &device_id, call_id);
             let normalized = normalize_phone_video_endpoint(access, &device_id, &mut endpoint);
             let accepted = normalized.is_ok()
-                && controller_step(&access.shared.controller, |controller| {
-                    controller.video_receive_opened_for_device(
+                && access
+                    .shared
+                    .controller
+                    .video_receive_opened_for_device(
                         &device_id,
                         session_generation,
                         call_id,
                         codec,
                         endpoint,
                     )
-                });
+                    .unwrap_or_else(|_| false);
             let configured = accepted
                 && pbx_id.is_some_and(|pbx_id| {
                     set_remote_video_endpoint(access, pbx_id, endpoint).is_ok()
@@ -169,24 +162,23 @@ pub(super) async fn handle_media_event(
                 );
             }
             if configured {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.begin_video_transmit_for_device(
+                access
+                    .shared
+                    .controller
+                    .begin_video_transmit_for_device(&device_id, session_generation, call_id)
+                    .unwrap_or_else(|_| Vec::new())
+            } else {
+                access
+                    .shared
+                    .controller
+                    .video_fallback_for_device(
                         &device_id,
                         session_generation,
                         call_id,
+                        VideoFallbackReason::ReceiveFailed,
                     )
-                })
-            } else {
-                controller_step(&access.shared.controller, |controller| {
-                    controller
-                        .video_fallback_for_device(
-                            &device_id,
-                            session_generation,
-                            call_id,
-                            VideoFallbackReason::ReceiveFailed,
-                        )
-                        .into_effects()
-                })
+                    .unwrap_or_else(|_| crate::runtime::controller::VideoFallbackOutcome::Ignored)
+                    .into_effects()
             }
         }
         PhoneDeviceEventKind::MultimediaReceiveChannelFailed {
@@ -196,14 +188,16 @@ pub(super) async fn handle_media_event(
             endpoint: _,
             passthrough_party_id: _,
         } => {
-            let fallback = controller_step(&access.shared.controller, |controller| {
-                controller.video_fallback_for_device(
+            let fallback = access
+                .shared
+                .controller
+                .video_fallback_for_device(
                     &device_id,
                     session_generation,
                     call_id,
                     VideoFallbackReason::ReceiveFailed,
                 )
-            });
+                .unwrap_or_else(|_| crate::runtime::controller::VideoFallbackOutcome::Ignored);
             let accepted = fallback.is_applied();
             let actions = fallback.into_effects();
             if accepted && owned_pbx_call(access, &device_id, call_id).is_some() {
@@ -228,14 +222,16 @@ pub(super) async fn handle_media_event(
             codec,
             passthrough_party_id: _,
         } => {
-            let fallback = controller_step(&access.shared.controller, |controller| {
-                controller.video_fallback_for_device(
+            let fallback = access
+                .shared
+                .controller
+                .video_fallback_for_device(
                     &device_id,
                     session_generation,
                     call_id,
                     VideoFallbackReason::ReceiveFailed,
                 )
-            });
+                .unwrap_or_else(|_| crate::runtime::controller::VideoFallbackOutcome::Ignored);
             let accepted = fallback.is_applied();
             let actions = fallback.into_effects();
             if accepted && owned_pbx_call(access, &device_id, call_id).is_some() {
@@ -254,8 +250,10 @@ pub(super) async fn handle_media_event(
             endpoint,
             passthrough_party_id,
         } => {
-            let accepted = controller_step(&access.shared.controller, |controller| {
-                controller.video_transmit_opened_for_device(
+            let accepted = access
+                .shared
+                .controller
+                .video_transmit_opened_for_device(
                     &device_id,
                     session_generation,
                     call_id,
@@ -263,7 +261,7 @@ pub(super) async fn handle_media_event(
                     endpoint,
                     passthrough_party_id,
                 )
-            });
+                .unwrap_or_else(|_| false);
             if accepted && owned_pbx_call(access, &device_id, call_id).is_some() {
                 publish_ami_event(
                     access,
@@ -295,14 +293,16 @@ pub(super) async fn handle_media_event(
             endpoint: _,
             passthrough_party_id: _,
         } => {
-            let fallback = controller_step(&access.shared.controller, |controller| {
-                controller.video_fallback_for_device(
+            let fallback = access
+                .shared
+                .controller
+                .video_fallback_for_device(
                     &device_id,
                     session_generation,
                     call_id,
                     VideoFallbackReason::TransmitFailed,
                 )
-            });
+                .unwrap_or_else(|_| crate::runtime::controller::VideoFallbackOutcome::Ignored);
             let accepted = fallback.is_applied();
             let actions = fallback.into_effects();
             if accepted && owned_pbx_call(access, &device_id, call_id).is_some() {
@@ -327,14 +327,16 @@ pub(super) async fn handle_media_event(
             codec,
             passthrough_party_id: _,
         } => {
-            let fallback = controller_step(&access.shared.controller, |controller| {
-                controller.video_fallback_for_device(
+            let fallback = access
+                .shared
+                .controller
+                .video_fallback_for_device(
                     &device_id,
                     session_generation,
                     call_id,
                     VideoFallbackReason::TransmitFailed,
                 )
-            });
+                .unwrap_or_else(|_| crate::runtime::controller::VideoFallbackOutcome::Ignored);
             let accepted = fallback.is_applied();
             let actions = fallback.into_effects();
             if accepted && owned_pbx_call(access, &device_id, call_id).is_some() {

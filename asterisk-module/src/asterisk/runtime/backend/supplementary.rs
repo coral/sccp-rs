@@ -4,7 +4,7 @@ use super::{
     Access, Arc, AsteriskBackend, AsteriskBackendError, CallFeatureError,
     ConferenceDestinationOperation, ConferenceTaskStartError, ForwardingOperation,
     ForwardingRouteReason, LogLevel, MutexExt as _, RedirectReasonCode, SupplementaryBackend,
-    VoicemailOperation, ast_log, controller_step, execute_cleanup_effects, native_bridging,
+    VoicemailOperation, ast_log, execute_cleanup_effects, native_bridging,
 };
 
 impl SupplementaryBackend for AsteriskBackend<'_> {
@@ -52,7 +52,6 @@ impl SupplementaryBackend for AsteriskBackend<'_> {
             },
         )?;
         let runtime = self.access.handle.clone();
-        let blocking_runtime = runtime.clone();
         let cleanup_runtime = runtime.clone();
         let phone = self.access.phone.clone();
         let shared = Arc::downgrade(&self.access.shared);
@@ -60,46 +59,39 @@ impl SupplementaryBackend for AsteriskBackend<'_> {
         let handset_call_id = operation.handset_call_id;
         let held_calls = operation.held_calls.clone();
         let mutation = operation.mutation;
+        super::reap_conference_tasks(&self.access.shared);
         self.access
             .shared
             .conference_destination_tasks
             .lock_unpoisoned()
             .start(&runtime, call_id, cancellation, move |token| async move {
-                let result = blocking_runtime
-                    .spawn_blocking(move || application.run())
-                    .await;
-                let failed = match result {
-                    Ok(Ok(())) => false,
-                    Ok(Err(error)) => {
+                let failed = match application.run() {
+                    Ok(()) => false,
+                    Err(error) => {
                         ast_log(
                             LogLevel::Warning,
                             &format!("conference destination ended with an error: {error}"),
                         );
                         true
                     }
-                    Err(error) => {
-                        ast_log(
-                            LogLevel::Warning,
-                            &format!("conference destination task failed: {error}"),
-                        );
-                        true
-                    }
                 };
                 if let Some(shared) = shared.upgrade() {
+                    super::reap_conference_tasks(&shared);
                     let completed = shared
                         .conference_destination_tasks
                         .lock_unpoisoned()
                         .complete(token);
                     if completed {
                         if failed {
-                            let cleanup = controller_step(&shared.controller, |controller| {
-                                controller.conference_destination_failed(
+                            let cleanup = shared
+                                .controller
+                                .conference_destination_failed(
                                     mutation,
                                     handset_call_id,
                                     &held_calls,
                                     &held_calls,
                                 )
-                            });
+                                .unwrap_or_else(|_| Vec::new());
                             let access = Access {
                                 handle: cleanup_runtime,
                                 phone,
@@ -107,9 +99,10 @@ impl SupplementaryBackend for AsteriskBackend<'_> {
                             };
                             execute_cleanup_effects(&access, cleanup).await;
                         } else {
-                            controller_step(&shared.controller, |controller| {
-                                controller.complete_conference_mutation(mutation)
-                            });
+                            shared
+                                .controller
+                                .complete_conference_mutation(mutation)
+                                .unwrap_or_else(|_| false);
                         }
                     }
                 }
@@ -121,7 +114,7 @@ impl SupplementaryBackend for AsteriskBackend<'_> {
                         operation: "start conference destination",
                     })
                 }
-                ConferenceTaskStartError::ShuttingDown => {
+                ConferenceTaskStartError::ShuttingDown | ConferenceTaskStartError::Exhausted => {
                     AsteriskBackendError::CallFeature(CallFeatureError::Unavailable {
                         operation: "start conference destination",
                     })

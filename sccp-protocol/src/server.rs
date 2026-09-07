@@ -38,8 +38,12 @@
 //! finish. Dropping every handle also closes the command channel and causes the
 //! same orderly exit.
 
+mod event_delivery;
 mod qos;
 mod transport;
+
+use event_delivery::{EventSender, PrioritySender};
+pub use event_delivery::{PriorityEvent, PriorityEventPermit};
 
 pub use qos::{
     SignalingSocket, SocketQosFailure, SocketQosMark, SocketQosPolicy, SocketQosReport,
@@ -65,6 +69,7 @@ use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -1452,6 +1457,7 @@ impl ServerError {
         matches!(
             self,
             Self::InvalidCallTransaction { .. }
+                | Self::CommandQueueFull
                 | Self::UnknownBlfButton { .. }
                 | Self::InvalidStationCommand { .. }
                 | Self::InvalidMulticastMedia(_)
@@ -1556,12 +1562,34 @@ impl ServerHandle {
     /// callers use this boundary before releasing resources that protect the
     /// command's on-device operation.
     pub async fn send_confirmed(&self, command: Command) -> Result<(), ServerError> {
+        self.send_confirmed_for_generation(command, None).await
+    }
+
+    /// Confirm stream delivery only to the exact admitted station generation.
+    pub async fn send_session_confirmed(
+        &self,
+        target: StationSessionTarget,
+        action: CommandAction,
+    ) -> Result<(), ServerError> {
+        self.send_confirmed_for_generation(
+            Command::new(target.device_id, action),
+            Some(target.generation),
+        )
+        .await
+    }
+
+    async fn send_confirmed_for_generation(
+        &self,
+        command: Command,
+        expected_generation: Option<SessionGeneration>,
+    ) -> Result<(), ServerError> {
         let expires_at = Instant::now() + ORDERING_ACKNOWLEDGEMENT_TIMEOUT;
         tokio::time::timeout_at(expires_at, async {
             let (written_tx, written_rx) = oneshot::channel();
             self.command_tx
                 .send(ServerCommand::Confirmed {
                     command: Box::new(command),
+                    expected_generation,
                     written: written_tx,
                     expires_at,
                 })
@@ -1795,11 +1823,37 @@ impl ServerHandle {
         Ok(IncomingOfferReceipt(receipt))
     }
 
-    /// Request orderly server shutdown.
-    ///
-    /// Success means the request entered the queue. The owner must still await
-    /// the [`Server::run`] future to know that it stopped accepting streams and
-    /// issued disconnects to every registered session.
+    /// Release an unused response reservation after its application operation
+    /// completes, expires, or is cancelled. Already-delivered results retain
+    /// their admission until the consumer releases its completion permit.
+    pub async fn cancel_service_response(
+        &self,
+        target: StationSessionTarget,
+        routing: PhoneServiceRouting,
+    ) -> Result<(), ServerError> {
+        self.command_tx
+            .send(ServerCommand::CancelServiceResponse { target, routing })
+            .await
+            .map_err(|_| ServerError::Stopped)
+    }
+
+    /// Retire only the connection generation that produced an accepted lifecycle event.
+    pub async fn disconnect_session(
+        &self,
+        device_id: DeviceId,
+        generation: SessionGeneration,
+    ) -> Result<(), ServerError> {
+        self.command_tx
+            .send(ServerCommand::DisconnectSession {
+                device_id,
+                generation,
+            })
+            .await
+            .map_err(|_| ServerError::Stopped)
+    }
+
+    /// Request orderly server shutdown. Await [`Server::run`] afterward to
+    /// confirm that admission closed and every station session finished.
     pub async fn shutdown(&self) -> Result<(), ServerError> {
         self.command_tx
             .send(ServerCommand::Shutdown)
@@ -1902,6 +1956,8 @@ impl ServerHandle {
 /// and then await `run`.
 #[derive(Debug)]
 pub struct Server {
+    session_tasks: JoinSet<()>,
+    session_shutdown: watch::Sender<bool>,
     listener: Option<TcpListener>,
     accepted_rx: mpsc::Receiver<AcceptedStation>,
     config: Arc<ServerConfig>,
@@ -1910,6 +1966,7 @@ pub struct Server {
     sessions: Sessions,
     lifecycle: Arc<Mutex<()>>,
     event_tx: mpsc::Sender<Event>,
+    priority_events: Option<PrioritySender>,
     command_rx: mpsc::Receiver<ServerCommand>,
     next_generation: Arc<AtomicU64>,
     next_statistics_generation: Arc<AtomicU64>,
@@ -1919,6 +1976,9 @@ pub struct Server {
     observation_sink: ObservationSink,
     next_observation_connection_id: AtomicU64,
 }
+
+const MAX_SESSION_TASKS: usize = 65_536;
+const MAX_PRIORITY_EVENTS: usize = 65_536;
 
 type Sessions = Arc<Mutex<HashMap<DeviceId, SessionSender>>>;
 type CommandWriteConfirmation = oneshot::Sender<Result<(), String>>;
@@ -1930,6 +1990,7 @@ struct SessionSender {
     anonymous_hotline: bool,
     tx: mpsc::Sender<SessionCommand>,
     admission: Arc<SessionAdmission>,
+    events: EventSender,
 }
 
 impl SessionSender {
@@ -2013,6 +2074,7 @@ enum ServerCommand {
     Public(Box<Command>),
     Confirmed {
         command: Box<Command>,
+        expected_generation: Option<SessionGeneration>,
         written: CommandWriteConfirmation,
         expires_at: Instant,
     },
@@ -2040,6 +2102,14 @@ enum ServerCommand {
     ReconfigureAnonymousHotline {
         definition: Option<AnonymousHotlineDefinition>,
         applied: oneshot::Sender<usize>,
+    },
+    CancelServiceResponse {
+        target: StationSessionTarget,
+        routing: PhoneServiceRouting,
+    },
+    DisconnectSession {
+        device_id: DeviceId,
+        generation: SessionGeneration,
     },
     Shutdown,
 }
@@ -2376,6 +2446,8 @@ impl Server {
         };
         Ok((
             Self {
+                session_tasks: JoinSet::new(),
+                session_shutdown: watch::channel(false).0,
                 listener,
                 accepted_rx,
                 config: Arc::new(config),
@@ -2384,6 +2456,7 @@ impl Server {
                 sessions: Arc::new(Mutex::new(HashMap::new())),
                 lifecycle: Arc::new(Mutex::new(())),
                 event_tx,
+                priority_events: None,
                 command_rx,
                 next_generation: Arc::new(AtomicU64::new(1)),
                 next_statistics_generation: Arc::new(AtomicU64::new(1)),
@@ -2397,6 +2470,24 @@ impl Server {
             event_rx,
             ingress,
         ))
+    }
+
+    /// Reserve an independent event lane for station lifecycle, terminal events,
+    /// and admitted media/service results. Enable before starting the server.
+    /// Ordinary input is rejected before state changes when its event batch cannot
+    /// be admitted; station readers continue handling acknowledgements and hangup.
+    pub fn enable_priority_events(
+        &mut self,
+        capacity: usize,
+    ) -> Result<mpsc::Receiver<PriorityEvent>, ServerError> {
+        if !(1..=MAX_PRIORITY_EVENTS).contains(&capacity) || self.priority_events.is_some() {
+            return Err(ServerError::InvalidConfig(
+                "priority event capacity must be 1..=65536 and configured once".into(),
+            ));
+        }
+        let (sender, receiver) = PrioritySender::channel(capacity);
+        self.priority_events = Some(sender);
+        Ok(receiver)
     }
 
     /// Return the concrete address owned by [`Self::bind`].
@@ -2420,32 +2511,58 @@ impl Server {
     /// [`ServerIngress`], starts an independent session task for each, and
     /// serializes server-wide commands. It returns normally after an explicit
     /// shutdown request or after every [`ServerHandle`] is dropped; before
-    /// returning it asks each registered session to disconnect. Listener or
+    /// returning it closes and joins every session, including unregistered sockets. Listener or
     /// server-level I/O failures are returned as [`ServerError`], while an
     /// individual session failure is emitted as [`Event::SessionError`].
     pub async fn run(mut self) -> Result<(), ServerError> {
+        let result = self.run_loop().await;
+        self.accepted_rx.close();
+        self.command_rx.close();
+        self.session_shutdown.send_replace(true);
+        while let Some(result) = self.session_tasks.join_next().await {
+            if let Err(error) = result {
+                warn!(%error, "SCCP session task failed during shutdown");
+            }
+        }
+        result
+    }
+
+    async fn run_loop(&mut self) -> Result<(), ServerError> {
         if let Some(listener) = &self.listener {
             info!(bind = %listener.local_addr()?, "SCCP server listening");
         }
         loop {
             tokio::select! {
-                accepted = accept_clear(self.listener.as_ref(), self.config.signaling_qos) => {
+                accepted = accept_clear(self.listener.as_ref(), self.config.signaling_qos), if self.session_tasks.len() < MAX_SESSION_TASKS => {
                     self.start_session(accepted?);
                 }
-                accepted = self.accepted_rx.recv(), if !self.accepted_rx.is_closed() => {
+                accepted = self.accepted_rx.recv(), if !self.accepted_rx.is_closed() && self.session_tasks.len() < MAX_SESSION_TASKS => {
                     if let Some(accepted) = accepted {
                         self.start_session(accepted);
                     }
                 }
+                Some(result) = self.session_tasks.join_next(), if !self.session_tasks.is_empty() => {
+                    if let Err(error) = result { warn!(%error, "SCCP session task failed"); }
+                }
                 command = self.command_rx.recv() => {
                     match command {
+                        Some(ServerCommand::CancelServiceResponse { target, routing }) => {
+                            if let Some(session) = self.sessions.lock().await.get(&target.device_id).filter(|session| session.generation == target.generation) {
+                                session.events.cancel_service_response(routing);
+                            }
+                        }
+                        Some(ServerCommand::DisconnectSession { device_id, generation }) => {
+                            if let Some(session) = self.sessions.lock().await.get(&device_id).filter(|session| session.generation == generation) {
+                                session.retire();
+                            }
+                        }
                         Some(ServerCommand::Public(command)) => {
                             if let Err(error) = self.dispatch_public(*command).await {
                                 warn!(%error, "discarding SCCP command for a retired session");
                             }
                         }
-                        Some(ServerCommand::Confirmed { command, written, expires_at }) => {
-                            self.dispatch_confirmed(command, written, expires_at).await;
+                        Some(ServerCommand::Confirmed { command, expected_generation, written, expires_at }) => {
+                            self.dispatch_confirmed(command, expected_generation, written, expires_at).await;
                         }
                         Some(ServerCommand::OfferIncoming { device_id, expected_generation, line_instance, call_id, info, presentation, ringer, mut delivery }) => {
                             let session = self.sessions.lock().await.get(&device_id).cloned();
@@ -2554,7 +2671,7 @@ impl Server {
         }
     }
 
-    fn start_session(&self, accepted: AcceptedStation) {
+    fn start_session(&mut self, accepted: AcceptedStation) {
         let AcceptedStation {
             stream,
             peer,
@@ -2591,6 +2708,7 @@ impl Server {
             None => stream,
         };
         let context = SessionContext {
+            shutdown: self.session_shutdown.subscribe(),
             peer,
             local,
             transport,
@@ -2600,7 +2718,7 @@ impl Server {
             anonymous_hotline: Arc::clone(&self.anonymous_hotline),
             sessions: Arc::clone(&self.sessions),
             lifecycle: Arc::clone(&self.lifecycle),
-            event_tx: self.event_tx.clone(),
+            event_tx: EventSender::session(self.event_tx.clone(), self.priority_events.clone()),
             next_generation: Arc::clone(&self.next_generation),
             next_statistics_generation: Arc::clone(&self.next_statistics_generation),
             next_call_id: Arc::clone(&self.next_call_id),
@@ -2609,9 +2727,9 @@ impl Server {
             observation_sink: self.observation_sink.clone(),
             observation_connection_id,
         };
-        let error_tx = self.event_tx.clone();
+        let error_tx = EventSender::session(self.event_tx.clone(), self.priority_events.clone());
         let observation_sink = self.observation_sink.clone();
-        tokio::spawn(async move {
+        self.session_tasks.spawn(async move {
             let outcome = run_session(stream, context).await;
             if let Some(connection_id) = observation_connection_id {
                 observation_sink.observe(ServerObservationKind::Disconnected {
@@ -2643,6 +2761,7 @@ impl Server {
     async fn dispatch_confirmed(
         &self,
         command: Box<Command>,
+        expected_generation: Option<SessionGeneration>,
         written: CommandWriteConfirmation,
         expires_at: Instant,
     ) {
@@ -2651,7 +2770,15 @@ impl Server {
             reject_expired_confirmed_command(written);
             return;
         }
-        let session = self.sessions.lock().await.get(&device_id).cloned();
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .get(&device_id)
+            .filter(|session| {
+                expected_generation.is_none_or(|expected| session.generation == expected)
+            })
+            .cloned();
         let Some(session) = session else {
             let _ = written.send(Err(ServerError::DeviceNotConnected(device_id).to_string()));
             return;
@@ -2970,6 +3097,7 @@ const fn transport_allowed(
 
 #[derive(Debug)]
 struct SessionContext {
+    shutdown: watch::Receiver<bool>,
     peer: SocketAddr,
     local: SocketAddr,
     transport: StationTransport,
@@ -2979,7 +3107,7 @@ struct SessionContext {
     anonymous_hotline: Arc<RwLock<Option<AnonymousHotlineDefinition>>>,
     sessions: Sessions,
     lifecycle: Arc<Mutex<()>>,
-    event_tx: mpsc::Sender<Event>,
+    event_tx: EventSender,
     next_generation: Arc<AtomicU64>,
     next_statistics_generation: Arc<AtomicU64>,
     next_call_id: Arc<AtomicU64>,
@@ -3195,127 +3323,133 @@ async fn run_session(mut stream: Box<dyn StationIo>, context: SessionContext) ->
     };
     let keepalive_timeout = Duration::from_secs(u64::from(keepalive_seconds) * 3);
 
-    let result = async {
-        let reason = 'session: loop {
-            if *retirement.borrow() == SessionAdmissionState::Retired {
-                break StationDisconnectReason::ServerRetirement;
-            }
-            tokio::select! {
-                read = stream.read(&mut read_buffer) => {
-                    if *retirement.borrow() == SessionAdmissionState::Retired {
-                        break StationDisconnectReason::ServerRetirement;
-                    }
-                    let count = read?;
-                    if count == 0 {
-                        break StationDisconnectReason::PeerClosure;
-                    }
-                    let frames = match decoder.push(&read_buffer[..count]) {
-                        Ok(frames) => frames,
-                        Err(error) if state.is_none() => {
-                            debug!(
-                                peer = %context.peer,
-                                %error,
-                                "discarding malformed pre-registration SCCP stream"
-                            );
-                            break StationDisconnectReason::ProtocolFailure;
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                    for frame in frames {
-                        if *retirement.borrow() == SessionAdmissionState::Retired {
-                            break 'session StationDisconnectReason::ServerRetirement;
-                        }
-                        let decode_protocol = state
-                            .as_ref()
-                            .map_or(ProtocolVersion::V3, |state| state.registration.protocol);
-                        let message_id = frame.message_id;
-                        let message = match ClientMessage::decode_with_version(frame, decode_protocol) {
-                            Ok(message) => message,
-                            Err(error) if message_id != crate::message::wire_id::REGISTER => {
-                                let device_id = state.as_ref().map(|state| state.device.id.clone());
-                                warn!(peer = %context.peer, message_id = format_args!("0x{message_id:04x}"), %error, "ignoring malformed SCCP application message");
-                                let _ = context.event_tx.send(Event::ProtocolWarning {
-                                    peer: context.peer,
-                                    device_id,
-                                    message_id,
-                                    error: error.to_string(),
-                                }).await;
-                                continue;
-                            }
-                            Err(error) => return Err(error.into()),
-                        };
-                        if let ClientMessage::Register(registration) = &message {
-                            if state.is_some() {
-                                return Err(ServerError::Protocol(CodecError::InvalidDefinition("duplicate REGISTER on one TCP session".into())));
-                            }
-                            match handle_registration(
-                                &mut stream,
-                                registration,
-                                &context,
-                                &session_tx,
-                                &admission,
-                            )
-                            .await?
-                            {
-                                Some(registered) => {
-                                    state = Some(registered.state);
-                                    last_station_activity = Instant::now();
-                                    let state = state
-                                        .as_ref()
-                                        .expect("registered session state was installed");
-                                    info!(device_id = %state.device.id, protocol = %state.registration.protocol, peer = %context.peer, "SCCP device registered");
-                                }
-                                None => break 'session StationDisconnectReason::RegistrationRejected,
-                            }
-                        } else if let Some(state) = state.as_mut() {
-                            last_station_activity = Instant::now();
-                            if handle_registered_message(&mut stream, state, message, &context).await?
-                                == SessionDisposition::Terminate
-                            {
-                                break 'session StationDisconnectReason::StationRequest;
-                            }
-                        } else if handle_pre_registration_message(&mut stream, message, &context).await?
-                            == SessionDisposition::Terminate
-                        {
-                            break 'session StationDisconnectReason::RegistrationRejected;
-                        }
-                    }
-                }
-                command = session_rx.recv() => {
-                    let Some(command) = command else {
-                        break StationDisconnectReason::ServerRetirement;
-                    };
-                    if *retirement.borrow() == SessionAdmissionState::Retired {
-                        unhandled_command = Some(command);
-                        break StationDisconnectReason::ServerRetirement;
-                    }
-                    let Some(state) = state.as_mut() else { continue };
-                    if handle_session_command_result(&mut stream, state, command, &context).await? {
-                        break StationDisconnectReason::ServerRetirement;
-                    }
-                }
-                changed = retirement.changed(), if state.is_some() => {
-                    if changed.is_err() || *retirement.borrow() == SessionAdmissionState::Retired {
-                        break StationDisconnectReason::ServerRetirement;
-                    }
-                }
-                _ = session_deadlines.tick(), if state.is_some() => {
-                    if *retirement.borrow() == SessionAdmissionState::Retired {
-                        break StationDisconnectReason::ServerRetirement;
-                    }
-                    if let Some(state) = state.as_mut() {
-                        handle_session_deadlines(&mut stream, state, &context, Instant::now()).await?;
-                    }
-                }
-                _ = tokio::time::sleep_until(last_station_activity + keepalive_timeout), if state.is_some() => {
-                    warn!(peer = %context.peer, "SCCP station activity timeout");
-                    break StationDisconnectReason::KeepaliveExpiry;
-                }
-            }
-        };
-        Ok::<_, ServerError>(reason)
-    }
-    .await;
+    let mut shutdown = context.shutdown.clone();
+    let result = tokio::select! {
+           biased;
+           _ = shutdown.changed() => Ok(StationDisconnectReason::ServerRetirement),
+           result = async {
+           let reason = 'session: loop {
+               if *retirement.borrow() == SessionAdmissionState::Retired {
+                   break StationDisconnectReason::ServerRetirement;
+               }
+               tokio::select! {
+                   read = stream.read(&mut read_buffer) => {
+                       if *retirement.borrow() == SessionAdmissionState::Retired {
+                           break StationDisconnectReason::ServerRetirement;
+                       }
+                       let count = read?;
+                       if count == 0 {
+                           break StationDisconnectReason::PeerClosure;
+                       }
+                       let frames = match decoder.push(&read_buffer[..count]) {
+                           Ok(frames) => frames,
+                           Err(error) if state.is_none() => {
+                               debug!(
+                                   peer = %context.peer,
+                                   %error,
+                                   "discarding malformed pre-registration SCCP stream"
+                               );
+                               break StationDisconnectReason::ProtocolFailure;
+                           }
+                           Err(error) => return Err(error.into()),
+                       };
+                       for frame in frames {
+                           if *retirement.borrow() == SessionAdmissionState::Retired {
+                               break 'session StationDisconnectReason::ServerRetirement;
+                           }
+                           let decode_protocol = state
+                               .as_ref()
+                               .map_or(ProtocolVersion::V3, |state| state.registration.protocol);
+                           let message_id = frame.message_id;
+                           let message = match ClientMessage::decode_with_version(frame, decode_protocol) {
+                               Ok(message) => message,
+                               Err(error) if message_id != crate::message::wire_id::REGISTER => {
+                                   let device_id = state.as_ref().map(|state| state.device.id.clone());
+                                   warn!(peer = %context.peer, message_id = format_args!("0x{message_id:04x}"), %error, "ignoring malformed SCCP application message");
+                                   let _ = context.event_tx.send(Event::ProtocolWarning {
+                                       peer: context.peer,
+                                       device_id,
+                                       message_id,
+                                       error: error.to_string(),
+                                   }).await;
+                                   continue;
+                               }
+                               Err(error) => return Err(error.into()),
+                           };
+                           if let ClientMessage::Register(registration) = &message {
+                               if state.is_some() {
+                                   return Err(ServerError::Protocol(CodecError::InvalidDefinition("duplicate REGISTER on one TCP session".into())));
+                               }
+                               match handle_registration(
+                                   &mut stream,
+                                   registration,
+                                   &context,
+                                   &session_tx,
+                                   &admission,
+                               )
+                               .await?
+                               {
+                                   Some(registered) => {
+                                       state = Some(registered.state);
+                                       last_station_activity = Instant::now();
+                                       let state = state
+                                           .as_ref()
+                                           .expect("registered session state was installed");
+                                       info!(device_id = %state.device.id, protocol = %state.registration.protocol, peer = %context.peer, "SCCP device registered");
+                                   }
+                                   None => break 'session StationDisconnectReason::RegistrationRejected,
+                               }
+                           } else if let Some(state) = state.as_mut() {
+                               last_station_activity = Instant::now();
+                               if handle_registered_message(&mut stream, state, message, &context).await?
+                                   == SessionDisposition::Terminate
+                               {
+                                   break 'session StationDisconnectReason::StationRequest;
+                               }
+                           } else if handle_pre_registration_message(&mut stream, message, &context).await?
+                               == SessionDisposition::Terminate
+                           {
+                               break 'session StationDisconnectReason::RegistrationRejected;
+                           }
+                       }
+                   }
+                   command = session_rx.recv() => {
+                       let Some(command) = command else {
+                           break StationDisconnectReason::ServerRetirement;
+                       };
+                       if *retirement.borrow() == SessionAdmissionState::Retired {
+                           unhandled_command = Some(command);
+                           break StationDisconnectReason::ServerRetirement;
+                       }
+                       let Some(state) = state.as_mut() else { continue };
+                       if handle_session_command_result(&mut stream, state, command, &context).await? {
+                           break StationDisconnectReason::ServerRetirement;
+                       }
+                   }
+                   changed = retirement.changed(), if state.is_some() => {
+                       if changed.is_err() || *retirement.borrow() == SessionAdmissionState::Retired {
+                           break StationDisconnectReason::ServerRetirement;
+                       }
+                   }
+                   _ = session_deadlines.tick(), if state.is_some() => {
+                       if *retirement.borrow() == SessionAdmissionState::Retired {
+                           break StationDisconnectReason::ServerRetirement;
+                       }
+                       if let Some(state) = state.as_mut() {
+                           handle_session_deadlines(&mut stream, state, &context, Instant::now()).await?;
+                           context.event_tx.reconcile_calls(state);
+                       }
+                   }
+                   _ = tokio::time::sleep_until(last_station_activity + keepalive_timeout), if state.is_some() => {
+                       warn!(peer = %context.peer, "SCCP station activity timeout");
+                       break StationDisconnectReason::KeepaliveExpiry;
+                   }
+               }
+           };
+           Ok::<_, ServerError>(reason)
+       }
+    => result,
+       };
 
     let (reason, result) = match result {
         Ok(reason) => (reason, Ok(())),
@@ -3425,7 +3559,8 @@ async fn finalize_session(
             }
         }
     }
-    let event_permit = context.event_tx.reserve().await.ok();
+    let stopping = *context.shutdown.borrow();
+    let event_permit = context.event_tx.disconnect_permit(stopping).await;
     let _lifecycle = context.lifecycle.lock().await;
     let mut sessions = context.sessions.lock().await;
     let was_current = sessions
@@ -3526,6 +3661,7 @@ async fn handle_registration(
         protocol,
         firmware: registration.firmware.clone(),
     };
+    context.event_tx.reserve_registration()?;
     send_message(
         stream,
         &ServerMessage::RegisterAck {
@@ -3540,11 +3676,7 @@ async fn handle_registration(
     .await?;
     send_message(stream, &ServerMessage::CapabilitiesRequest, protocol).await?;
     let state = SessionState::new(definition, device_registration, features, generation);
-    let registered = context
-        .event_tx
-        .reserve()
-        .await
-        .map_err(|_| ServerError::Stopped)?;
+    let registered = context.event_tx.registration_permit().await?;
     let _lifecycle = context.lifecycle.lock().await;
     let mut sessions = context.sessions.lock().await;
     if let Some(previous) = sessions.get(&registration.device_id) {
@@ -3557,6 +3689,7 @@ async fn handle_registration(
             anonymous_hotline,
             tx: session_tx.clone(),
             admission: Arc::clone(admission),
+            events: context.event_tx.clone(),
         },
     );
     drop(sessions);
@@ -3606,23 +3739,27 @@ async fn handle_session_command_result(
         debug!(device_id = %state.device.id, ?offer_call_id, "discarding incoming call cancelled before it was offered");
         return Ok(false);
     }
-    let result = match expires_at {
-        Some(expires_at) => {
-            match tokio::time::timeout_at(
-                expires_at,
-                handle_session_command(stream, state, command, context),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    state.transport_writable = false;
-                    Err(ServerError::CommandAcknowledgementTimeout)
+    let result = match context.event_tx.reserve_command(&command) {
+        Err(error) => Err(error),
+        Ok(()) => match expires_at {
+            Some(expires_at) => {
+                match tokio::time::timeout_at(
+                    expires_at,
+                    handle_session_command(stream, state, command, context),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        state.transport_writable = false;
+                        Err(ServerError::CommandAcknowledgementTimeout)
+                    }
                 }
             }
-        }
-        None => handle_session_command(stream, state, command, context).await,
+            None => handle_session_command(stream, state, command, context).await,
+        },
     };
+    context.event_tx.reconcile_calls(state);
     match result {
         Ok(disconnect) => {
             if let Some(delivery) = offer_delivery {
@@ -4127,7 +4264,16 @@ async fn handle_registered_message(
     } else {
         SessionDisposition::Continue
     };
+    let _delivery = match context.event_tx.begin_input(&message) {
+        Ok(delivery) => delivery,
+        Err(ServerError::CommandQueueFull) => {
+            debug!(device_id = %state.device.id, "rejecting station input while runtime event admission is full");
+            return Ok(SessionDisposition::Continue);
+        }
+        Err(error) => return Err(error),
+    };
     handle_client_message(stream, state, message, context).await?;
+    context.event_tx.reconcile_calls(state);
     Ok(disposition)
 }
 

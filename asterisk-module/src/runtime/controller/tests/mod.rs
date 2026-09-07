@@ -1,3 +1,15 @@
+/// Runs one pure controller transition and drops the mutex guard before
+/// returning its owned result to adapter code. Adapter I/O belongs after this
+/// function returns.
+#[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+pub(crate) fn controller_step<T>(
+    controller: &Mutex<Controller>,
+    step: impl FnOnce(&mut Controller) -> T,
+) -> T {
+    let mut controller = controller.lock().expect("SCCP controller lock poisoned");
+    step(&mut controller)
+}
+
 use super::*;
 use crate::call::transfer::TransferExecutionProgress;
 use crate::config::LineConfig;
@@ -88,7 +100,7 @@ fn voicemail_target(value: &str) -> VoicemailTarget {
     VoicemailTarget::new("from-sccp", value).unwrap()
 }
 
-fn binding_for(device: &str, line_instance: u32) -> LineBinding {
+pub(super) fn binding_for(device: &str, line_instance: u32) -> LineBinding {
     binding_with_ring(device, line_instance, AppearanceRingMode::Normal)
 }
 
@@ -140,7 +152,7 @@ fn registration_for(device: &str) -> DeviceRegistration {
     }
 }
 
-fn shared_inbound_controller() -> Controller {
+pub(super) fn shared_inbound_controller() -> Controller {
     let mut controller = Controller::new(Duration::from_secs(1));
     controller.registered(registration_for("SEP001122334455"));
     controller.registered(registration_for("SEP112233445566"));
@@ -378,7 +390,7 @@ fn adapter_callback_steps_release_the_controller_before_external_work() {
 }
 
 #[test]
-fn asterisk_adapter_uses_the_owned_result_lock_scope_for_every_controller_access() {
+fn asterisk_adapter_uses_typed_controller_operations_and_snapshots() {
     let source = concat!(
         include_str!("../../../asterisk/mod.rs"),
         include_str!("../../../asterisk/runtime/management.rs"),
@@ -400,10 +412,14 @@ fn asterisk_adapter_uses_the_owned_result_lock_scope_for_every_controller_access
         .filter(|character| !character.is_whitespace())
         .collect();
 
-    assert!(compact.contains("controller_step(&access.shared.controller"));
+    assert!(!compact.contains("controller_step("));
+    assert!(
+        compact.contains("pubcontroller:crate::runtime::controller::ownership::ControllerHandle")
+    );
+    assert!(!compact.contains("Mutex<Controller>"));
     assert!(
         !compact.contains(".controller.lock("),
-        "adapter code bypassed controller_step and acquired the mutex directly"
+        "adapter code acquired controller state instead of using its owner"
     );
 }
 

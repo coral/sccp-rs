@@ -1,11 +1,11 @@
 use super::{
     Access, AddressSelectionPolicy, AsteriskBackend, AudioFraming, AudioFramingError,
     AudioProcessingPolicy, CallId, CallState, Codec, DEFAULT_AUDIO_MAX_FRAMES_PER_PACKET,
-    DEFAULT_AUDIO_PACKET_MS, DeviceId, DirectMediaCall, DirectMediaPolicy, DtmfMode, Instant,
-    IpAddr, LogLevel, MediaEndpoint, MediaEndpointAddress, MediaStreamState, MediaTrafficClass,
-    ModuleConfig, MutexExt as _, NonNull, OutboundMediaMode, PbxCallId, PhoneCommand,
-    PhoneCommandAction, ResolvedExternalAddresses, ast_log, canonical_ip_address, controller_step,
-    native_channel, state_from_channel, sys, with_channel,
+    DEFAULT_AUDIO_PACKET_MS, DeviceId, DirectMediaCall, DirectMediaPolicy, DtmfMode, IpAddr,
+    MediaEndpoint, MediaEndpointAddress, MediaStreamState, MediaTrafficClass, ModuleConfig,
+    NonNull, OutboundMediaMode, PbxCallId, PhoneCommand, PhoneCommandAction,
+    ResolvedExternalAddresses, canonical_ip_address, native_channel, state_from_channel, sys,
+    with_channel,
 };
 use crate::media::direct::direct_failure_anchor;
 use crate::media::encryption::{AudioEncryptionAdmission, MediaEncryptionDecision};
@@ -24,41 +24,47 @@ fn audio_encryption_admission(
     device_id: &DeviceId,
     call_id: CallId,
 ) -> Result<AudioEncryptionAdmission, String> {
-    let (pbx_id, line_instance, station) =
-        controller_step(&access.shared.controller, |controller| {
-            let call = controller.call(call_id)?;
-            if &call.device_id != device_id {
-                return None;
-            }
-            let station = controller.registered_device(device_id)?;
-            Some((
-                call.pbx_id,
-                call.line_instance,
-                station.audio_encryption.clone(),
-            ))
-        })
+    let snapshot = access.shared.controller.snapshot();
+    let call = snapshot
+        .call(call_id)
+        .filter(|call| &call.device_id == device_id)
         .ok_or_else(|| format!("call {call_id:?} is not owned by device {device_id}"))?;
+    if let Some(retained) = snapshot
+        .call_runtime_record(call.pbx_id)
+        .and_then(|record| record.audio_encryption.clone())
+    {
+        return Ok(retained);
+    }
+    let registration = snapshot
+        .registered_device(device_id)
+        .ok_or_else(|| format!("call {call_id:?} has no registered station"))?;
+    let generation = registration.session_generation;
+    let station = registration.audio_encryption.clone();
+    let config = access.config();
+    let binding = access
+        .line_binding(device_id, call.line_instance)
+        .ok_or_else(|| format!("call {call_id:?} has no configured media binding"))?;
+    let policy = config
+        .media_for_binding(&binding)
+        .map(|media| media.audio_encryption)
+        .or_else(|| {
+            config
+                .guest_hotline_binding(device_id, call.line_instance)
+                .map(|_| config.general.audio_encryption.clone())
+        })
+        .ok_or_else(|| format!("call {call_id:?} has no audio-encryption policy"))?;
+    let local = AsteriskBackend::new(access).audio_encryption_capabilities();
     access
         .shared
-        .audio_encryption_admissions
-        .lock_unpoisoned()
-        .get_or_try_insert_with(pbx_id, || {
-            let config = access.config();
-            let binding = access
-                .line_binding(device_id, line_instance)
-                .ok_or_else(|| format!("call {call_id:?} has no configured media binding"))?;
-            let policy = config
-                .media_for_binding(&binding)
-                .map(|media| media.audio_encryption)
-                .or_else(|| {
-                    config
-                        .guest_hotline_binding(device_id, line_instance)
-                        .map(|_| config.general.audio_encryption.clone())
-                })
-                .ok_or_else(|| format!("call {call_id:?} has no audio-encryption policy"))?;
-            let local = AsteriskBackend::new(access).audio_encryption_capabilities();
-            Ok(AudioEncryptionAdmission::new(policy, station, local))
-        })
+        .controller
+        .retain_audio_encryption(
+            call_id,
+            device_id.clone(),
+            generation,
+            AudioEncryptionAdmission::new(policy, station, local),
+        )
+        .map_err(|error| format!("audio-encryption owner unavailable: {error}"))?
+        .ok_or_else(|| format!("call {call_id:?} changed during audio-encryption admission"))
 }
 
 pub(super) fn admit_clear_audio_media(
@@ -75,31 +81,17 @@ pub(super) fn admit_clear_audio_media(
     }
 }
 
-pub fn resolved_external_addresses(
-    access: &Access,
-    config: &ModuleConfig,
-) -> ResolvedExternalAddresses {
-    let mut cache = access.shared.external_addresses.lock_unpoisoned();
-    if let Err(error) = cache.refresh(config.general.network.external.as_ref(), Instant::now()) {
-        ast_log(
-            LogLevel::Warning,
-            &format!("unable to refresh configured external address: {error}"),
-        );
-    }
-    cache.current()
-}
-
 pub fn station_address_context(
     access: &Access,
     device_id: &DeviceId,
 ) -> Option<(IpAddr, Option<IpAddr>)> {
-    controller_step(&access.shared.controller, |controller| {
+    (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let registration = &controller.registered_device(device_id)?.registration;
         Some((
             canonical_ip_address(registration.peer.ip()),
             registration.reported_address_for_peer(),
         ))
-    })
+    })(access.shared.controller.snapshot().as_ref())
 }
 
 pub fn address_selection_policy<'a>(
@@ -138,7 +130,7 @@ fn normalized_phone_address(
     address: IpAddr,
 ) -> Result<IpAddr, String> {
     let config = access.config();
-    let external = resolved_external_addresses(access, &config);
+    let external = access.shared.external_addresses.current();
     let policy = address_selection_policy(&config, device_id, external)
         .ok_or_else(|| format!("device {device_id} has no address-selection policy"))?;
     let (signaling_peer, registration_reported) = station_address_context(access, device_id)
@@ -192,7 +184,7 @@ pub fn local_video_endpoint(
     })
     .flatten()?;
     let config = access.config();
-    let external = resolved_external_addresses(access, &config);
+    let external = access.shared.external_addresses.current();
     let policy = address_selection_policy(&config, device_id, external)?;
     let (signaling_peer, registration_reported) = station_address_context(access, device_id)?;
     let (address, _) = policy
@@ -216,7 +208,7 @@ pub fn local_media_endpoint(
     });
     let endpoint = endpoint.flatten()?;
     let config = access.config();
-    let external = resolved_external_addresses(access, &config);
+    let external = access.shared.external_addresses.current();
     let policy = address_selection_policy(&config, device_id, external)?;
     let (signaling_peer, registration_reported) = station_address_context(access, device_id)?;
     let (address, _) = policy
@@ -264,16 +256,20 @@ impl PendingMediaRetarget {
     pub(super) fn confirm(self) {}
 
     pub(super) fn rollback(self, access: &Access) -> bool {
-        controller_step(&access.shared.controller, |controller| {
+        {
             match self.rollback {
-                MediaRetargetRollback::Anchor(previous) => {
-                    controller.media_retarget_enqueue_failed(self.call_id, previous)
-                }
-                MediaRetargetRollback::Direct(previous) => {
-                    controller.media_retarget_compensation_enqueue_failed(self.call_id, previous)
-                }
+                MediaRetargetRollback::Anchor(previous) => access
+                    .shared
+                    .controller
+                    .media_retarget_enqueue_failed(self.call_id, previous)
+                    .unwrap_or_else(|_| false),
+                MediaRetargetRollback::Direct(previous) => access
+                    .shared
+                    .controller
+                    .media_retarget_compensation_enqueue_failed(self.call_id, previous)
+                    .unwrap_or_else(|_| false),
             }
-        })
+        }
     }
 }
 
@@ -288,9 +284,11 @@ pub(super) fn prepare_anchor_retarget(
     let dtmf_mode = configured_dtmf_mode(access, &call.device_id, call.call_id);
     let audio_processing = configured_audio_processing(access, &call.device_id, call.call_id);
     let traffic_class = configured_audio_traffic_class(access, &call.device_id)?;
-    let previous = controller_step(&access.shared.controller, |controller| {
-        controller.media_retarget_started(call.call_id)
-    })?;
+    let previous = access
+        .shared
+        .controller
+        .media_retarget_started(call.call_id)
+        .unwrap_or_else(|_| None)?;
     Some(PendingMediaRetarget {
         command: PhoneCommand::new(
             call.device_id.clone(),
@@ -323,9 +321,11 @@ pub(super) fn prepare_direct_retarget(
     access: &Access,
     call: &DirectMediaCall,
 ) -> Option<PendingMediaRetarget> {
-    let previous = controller_step(&access.shared.controller, |controller| {
-        controller.media_retarget_compensation_started(call.call_id)
-    })?;
+    let previous = access
+        .shared
+        .controller
+        .media_retarget_compensation_started(call.call_id)
+        .unwrap_or_else(|_| None)?;
     let dtmf_mode = configured_dtmf_mode(access, &call.device_id, call.call_id);
     let audio_processing = configured_audio_processing(access, &call.device_id, call.call_id);
     let traffic_class = configured_audio_traffic_class(access, &call.device_id)?;
@@ -362,7 +362,7 @@ pub fn recover_failed_media_transmission(
     call_id: CallId,
     failed_endpoint: MediaEndpoint,
 ) -> MediaFailureDisposition {
-    let call = controller_step(&access.shared.controller, |controller| {
+    let call = (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let call = controller.call(call_id)?;
         if &call.device_id != device_id
             || call.state != CallState::Connected
@@ -382,15 +382,11 @@ pub fn recover_failed_media_transmission(
             phone_endpoint,
             transmit_endpoint: failed_endpoint,
         })
-    });
+    })(access.shared.controller.snapshot().as_ref());
     let Some(call) = call else {
         return MediaFailureDisposition::Ignored;
     };
-    let anchoring_required = access
-        .shared
-        .media_anchors
-        .lock_unpoisoned()
-        .is_anchored(call.pbx_id);
+    let anchoring_required = access.shared.media_runtime.is_anchored(call.pbx_id);
     let anchor = local_media_endpoint(access, call.pbx_id, &call.device_id, call.codec).and_then(
         |mut endpoint| {
             let framing = audio_framing(access, &call.device_id, call.call_id, call.codec).ok()?;
@@ -421,9 +417,11 @@ pub fn enqueue_media_retarget(
     let Some(traffic_class) = configured_audio_traffic_class(access, &call.device_id) else {
         return false;
     };
-    let previous = controller_step(&access.shared.controller, |controller| {
-        controller.media_retarget_started(call.call_id)
-    });
+    let previous = access
+        .shared
+        .controller
+        .media_retarget_started(call.call_id)
+        .unwrap_or_else(|_| None);
     let Some(previous) = previous else {
         return false;
     };
@@ -443,9 +441,11 @@ pub fn enqueue_media_retarget(
     {
         return true;
     }
-    controller_step(&access.shared.controller, |controller| {
-        controller.media_retarget_enqueue_failed(call.call_id, previous)
-    })
+    access
+        .shared
+        .controller
+        .media_retarget_enqueue_failed(call.call_id, previous)
+        .unwrap_or_else(|_| false)
 }
 
 pub(super) fn audio_framing(
@@ -454,7 +454,7 @@ pub(super) fn audio_framing(
     call_id: CallId,
     codec: Codec,
 ) -> Result<AudioFraming, AudioFramingError> {
-    let packet_limit = controller_step(&access.shared.controller, |controller| {
+    let packet_limit = (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let Some(state) = controller.registered_device(device) else {
             return StationPacketLimit::Unavailable;
         };
@@ -468,18 +468,16 @@ pub(super) fn audio_framing(
             .map_or(StationPacketLimit::Unsupported, |capability| {
                 StationPacketLimit::Maximum(capability.max_packet_ms)
             })
-    });
-    let pbx_id = controller_step(&access.shared.controller, |controller| {
-        controller.call_pbx_id(call_id)
-    });
+    })(access.shared.controller.snapshot().as_ref());
+    let pbx_id = access.shared.controller.snapshot().call_pbx_id(call_id);
     let requested_packet_ms = pbx_id
         .and_then(|pbx_id| {
             access
                 .shared
-                .audio_packet_ms
-                .lock_unpoisoned()
-                .get(&pbx_id)
-                .copied()
+                .controller
+                .snapshot()
+                .call_runtime_record(pbx_id)
+                .and_then(|record| record.audio_packet_ms)
         })
         .unwrap_or(DEFAULT_AUDIO_PACKET_MS);
     if requested_packet_ms == 0 {
@@ -508,9 +506,11 @@ pub(super) fn audio_framing(
 }
 
 pub fn configured_dtmf_mode(access: &Access, device: &DeviceId, call_id: CallId) -> DtmfMode {
-    let line_instance = controller_step(&access.shared.controller, |controller| {
-        controller.call_line_instance(call_id)
-    });
+    let line_instance = access
+        .shared
+        .controller
+        .snapshot()
+        .call_line_instance(call_id);
     line_instance
         .and_then(|line_instance| {
             let config = access.config();
@@ -528,9 +528,11 @@ pub fn configured_audio_processing(
     device: &DeviceId,
     call_id: CallId,
 ) -> AudioProcessingPolicy {
-    let line_instance = controller_step(&access.shared.controller, |controller| {
-        controller.call_line_instance(call_id)
-    });
+    let line_instance = access
+        .shared
+        .controller
+        .snapshot()
+        .call_line_instance(call_id);
     line_instance
         .and_then(|line_instance| {
             let config = access.config();
@@ -572,9 +574,11 @@ pub fn configured_video_traffic_class(
 }
 
 pub fn configured_early_media(access: &Access, device: &DeviceId, call_id: CallId) -> bool {
-    let line_instance = controller_step(&access.shared.controller, |controller| {
-        controller.call_line_instance(call_id)
-    });
+    let line_instance = access
+        .shared
+        .controller
+        .snapshot()
+        .call_line_instance(call_id);
     line_instance
         .and_then(|line_instance| {
             let config = access.config();
@@ -592,15 +596,10 @@ pub fn direct_media_call(
     channel: *mut sys::ast_channel,
 ) -> Option<DirectMediaCall> {
     let state = unsafe { state_from_channel(channel) }?;
-    if access
-        .shared
-        .media_anchors
-        .lock_unpoisoned()
-        .is_anchored(state.pbx_id)
-    {
+    if access.shared.media_runtime.is_anchored(state.pbx_id) {
         return None;
     }
-    controller_step(&access.shared.controller, |controller| {
+    (|controller: &crate::runtime::controller::ControllerSnapshot| {
         if controller.conference_session_by_pbx(state.pbx_id).is_some()
             || controller.barge_session_by_pbx(state.pbx_id).is_some()
         {
@@ -626,7 +625,7 @@ pub fn direct_media_call(
             phone_endpoint,
             transmit_endpoint,
         })
-    })
+    })(access.shared.controller.snapshot().as_ref())
 }
 
 pub fn direct_media_policy<'a>(

@@ -26,13 +26,6 @@ pub(crate) const fn restore_attempts_exhausted(attempts: u8) -> bool {
     attempts >= MAX_RESTORE_ATTEMPTS
 }
 
-pub(crate) fn generation_is_current(
-    current: AnnouncementGeneration,
-    completion: AnnouncementGeneration,
-) -> bool {
-    current == completion
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ReplacementAnchorPlan {
     pub retain_previous: HashSet<PbxCallId>,
@@ -279,16 +272,6 @@ mod tests {
         assert!(!restore_attempts_exhausted(MAX_RESTORE_ATTEMPTS - 1));
         assert!(restore_attempts_exhausted(MAX_RESTORE_ATTEMPTS));
         assert!(restore_attempts_exhausted(u8::MAX));
-    }
-
-    #[test]
-    fn stale_and_repeated_completions_do_not_match_a_replacement_generation() {
-        let next = AtomicU64::new(1);
-        let first = allocate_generation(&next).unwrap();
-        let replacement = allocate_generation(&next).unwrap();
-        assert!(generation_is_current(first, first));
-        assert!(!generation_is_current(replacement, first));
-        assert!(generation_is_current(replacement, replacement));
     }
 
     #[test]

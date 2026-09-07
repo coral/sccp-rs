@@ -1,58 +1,68 @@
 use sccp_protocol::DEFAULT_AUDIO_PACKET_MS;
 
 use super::{
-    ActiveConferenceAnnouncement, AmiEventPublisher, AppearanceRingMode, AppearanceRingSummary,
-    Arc, AsteriskChannel, AsteriskDatabase, AsteriskHints, AsteriskManager, AsteriskPartyUpdates,
-    AsteriskRegistrationExtensions, AsyncMutex, AtomicU64, BTreeMap, BTreeSet, BargeBridgeSession,
-    BlfSubscriptions, BridgeSession, CallDirection, CallId, CallState, CallStatus,
+    AppearanceRingMode, AppearanceRingSummary, Arc, AsteriskChannel, AsteriskDatabase,
+    AsteriskPartyUpdates, BTreeMap, BTreeSet, CallDirection, CallId, CallState, CallStatus,
     CalledPartyOverride, CalledPartyProvider, CalledPartyProviderError, ChannelAppearanceSnapshot,
     ChannelDirectionSummary, ChannelMediaStateSummary, ChannelQueryLookupError,
     ChannelQueryProvider, ChannelQuerySnapshot, ChannelQueryTarget, ChannelStateSummary, Codec,
     CodecPreferenceContext, CodecPreferenceProvider, CodecPreferenceProviderError,
-    CodecPreferenceRejection, ConferenceId, ConferenceParticipantStatus, ConferenceStatus,
+    CodecPreferenceRejection, ConferenceParticipantStatus, ConferenceStatus,
     ConferenceTaskRegistry, ConfigReconciliation, ConfigurationProvider, ConnectedLineSource,
     ConnectedLineUpdate, ControlOperation, ControlOutcome, ControlProvider, ControlProviderError,
-    Controller, DeviceCallSummary, DeviceDndSummary, DeviceFeatureState, DeviceFeatureSummary,
-    DeviceId, DeviceQueryLookupError, DeviceQueryProvider, DeviceQuerySnapshot, DeviceQueryTarget,
-    DeviceState, DialplanRegistration, DirectMediaCall, DirectoryProvider, DirectoryProviderError,
-    DirectoryRecord, DndMode, DriverEffect, ExternalAddressCache, FeatureControlMutation,
-    FeatureControlOutcome, FeatureControlProvider, FeatureControlProviderError, FeatureStore,
-    FeatureStoreError, ForwardingDestination, ForwardingEntryRegistry, ForwardingKind,
-    ForwardingOperation, Handle, HandsetCallIndication, HandsetCallIndicationProvider,
+    DeviceCallSummary, DeviceDndSummary, DeviceFeatureState, DeviceFeatureSummary, DeviceId,
+    DeviceQueryLookupError, DeviceQueryProvider, DeviceQuerySnapshot, DeviceQueryTarget,
+    DialplanRegistration, DirectoryProvider, DirectoryProviderError, DirectoryRecord, DndMode,
+    DriverEffect, FeatureControlMutation, FeatureControlOutcome, FeatureControlProvider,
+    FeatureControlProviderError, FeatureStore, FeatureStoreError, ForwardingDestination,
+    ForwardingKind, Handle, HandsetCallIndication, HandsetCallIndicationProvider,
     HandsetCallIndicationProviderError, HandsetEffect, HandsetMessageOperation,
     HandsetMessageProvider, HandsetMessageProviderError, HashMap, HashSet, HttpRegistration,
     Instant, InventoryProvider, InventoryProviderError, InventoryRegistration, InventorySnapshot,
     InventoryValue, JoinHandle, LineAppearanceSnapshot, LineCallSummary, LineQueryLookupError,
     LineQueryProvider, LineQuerySnapshot, LineQueryTarget, MANAGER_CONTROL_TIMEOUT,
-    ManagerActionRegistration, MediaAnchorRegistry, MediaAnchorRestores, MediaDirection, MediaKind,
-    MediaStatisticsStatus, MediaStreamState, MediaStreamStatus, MobilityRegistry, MobilitySlot,
-    ModuleConfig, Mutex, MutexExt as _, NameCharset, NoAnswerTimerRegistry, NonNull, NumberPlan,
-    ParkingRegistry, ParkingSubscription, PartyIdentity, PartySnapshot, PbxAudioFormat,
-    PbxBridgeId, PbxCallId, PhoneCallState, PhoneCommand, PhoneCommandAction, Presentation,
-    RegisteredDeviceSummary, RegistrationContextRegistry, RegistrationRegistryError, Runtime,
+    ManagerActionRegistration, MediaDirection, MediaKind, MediaStatisticsStatus, MediaStreamState,
+    MediaStreamStatus, ModuleConfig, Mutex, MutexExt as _, NameCharset, NonNull, NumberPlan,
+    ParkingSubscription, PartyIdentity, PartySnapshot, PbxAudioFormat, PbxCallId, PhoneCallState,
+    PhoneCommand, PhoneCommandAction, Presentation, RegisteredDeviceSummary, Runtime,
     RuntimeDndMutation, RuntimeDndMutationError, RuntimeRecordingTriggerQueue,
     RuntimeStatusProvider, RuntimeStatusProviderError, RuntimeStatusSnapshot, RwLock,
     RwLockExt as _, ServerHandle, ServiceControlProvider, ServiceOperation, ServiceOutcome,
-    ServiceProviderError, SharedNoAnswerRoute, StationMediaCapabilities, SystemHostResolver,
-    TransactionId, Weak, configured_inventory, configured_registration_appearances,
-    controller_step, execute_dnd_mutation, forwarding_ui_line_instances, mpsc, native_audio_format,
-    native_bridging, native_channel, negotiate_audio, pbx_audio_format, publish_device_features,
+    ServiceProviderError, StationMediaCapabilities, Weak, configured_inventory,
+    execute_dnd_mutation, forwarding_ui_line_instances, mpsc, native_audio_format, native_bridging,
+    native_channel, negotiate_audio, pbx_audio_format, publish_device_features,
     publish_feature_changes, raw, records_from_config, runtime_line_binding, state_from_channel,
-    sys, update_device_features_locked,
+    sys, update_device_features,
 };
 use crate::ami::runtime::MediaStatisticsPrivacy;
 use crate::asterisk::raw::handles::ChannelRef;
-use crate::asterisk::raw::presence::NativeMwiSubscription;
-use crate::media::encryption::AudioEncryptionAdmissions;
 use crate::runtime::controller::{VideoMediaState, VideoStreamState};
+use crate::runtime::mailbox::MailboxSender;
 use crate::runtime::resource::{ResourceBinding, ResourcePermit};
 
 pub struct Module {
     pub runtime: Runtime,
+    pub controller_task: Option<std::thread::JoinHandle<()>>,
     pub access: Access,
     pub server_task: JoinHandle<()>,
     pub event_task: JoinHandle<()>,
+    pub event_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    pub finish_event_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    pub event_drained: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub signal_task: JoinHandle<()>,
     pub background_task: JoinHandle<()>,
+    pub resolver_task: JoinHandle<()>,
+    pub configuration_task: Option<std::thread::JoinHandle<()>>,
+    pub(super) media_task: Option<std::thread::JoinHandle<()>>,
+    pub(super) presence_task: JoinHandle<()>,
+    pub(super) parking_task: JoinHandle<()>,
+    pub(super) worker_task: JoinHandle<usize>,
+    pub(super) dnd_schedule_task: JoinHandle<()>,
+    pub(super) bridge_task: JoinHandle<super::bridge_owner::BridgeState>,
+    pub publication_task: JoinHandle<crate::runtime::publication::PublicationState>,
+    pub http_registrations: Vec<HttpRegistration>,
+    pub dialplan_registrations: Vec<DialplanRegistration>,
+    pub manager_registrations: Vec<ManagerActionRegistration>,
     pub parking_subscription: ParkingSubscription,
     pub sorcery_registration: Option<Arc<raw::sorcery::SorceryRegistration>>,
     #[cfg(feature = "telemetry")]
@@ -67,63 +77,34 @@ pub struct Access {
 }
 
 pub struct Shared {
+    pub(super) event_diagnostics: RwLock<Arc<super::services::EventDiagnostics>>,
     pub config: RwLock<Arc<ModuleConfig>>,
     pub config_provider: Arc<dyn ConfigurationProvider>,
     pub config_reconciliation: Arc<ConfigReconciliation>,
-    pub config_reloads: Mutex<()>,
-    pub controller: Mutex<Controller>,
-    pub external_addresses: Mutex<ExternalAddressCache<SystemHostResolver>>,
-    pub published_line_states: Mutex<HashMap<String, DeviceState>>,
+    pub configuration_transactions:
+        crate::runtime::configuration_transaction::ConfigurationTransactions,
+    pub controller: crate::runtime::controller::ownership::ControllerHandle,
+    pub external_addresses: crate::runtime::resolver::ExternalAddressHandle,
+    pub(super) presence: super::presence_owner::PresenceHandle,
+    pub parking_events: crate::runtime::parking_events::ParkingEvents,
+    pub workers: crate::runtime::workers::WorkerHandle,
     pub channels: Mutex<HashMap<PbxCallId, Arc<ChannelBinding>>>,
-    pub assigned_channel_ids: Mutex<HashMap<PbxCallId, String>>,
-    pub audio_packet_ms: Mutex<HashMap<PbxCallId, u32>>,
-    pub audio_preferences: Mutex<HashMap<PbxCallId, Vec<PbxAudioFormat>>>,
-    pub audio_encryption_admissions: Mutex<AudioEncryptionAdmissions<PbxCallId>>,
-    pub media_anchor_mutations: AsyncMutex<()>,
-    pub media_anchors: Mutex<MediaAnchorRegistry>,
-    pub media_anchor_restores: Mutex<MediaAnchorRestores<DirectMediaCall>>,
-    pub conference_announcements: Mutex<HashMap<ConferenceId, ActiveConferenceAnnouncement>>,
-    pub conference_announcement_mutations: Mutex<()>,
-    pub next_conference_announcement_id: AtomicU64,
+    pub channel_allocations: Arc<ResourceBinding<()>>,
+
+    pub(super) media_runtime: super::media_owner::MediaHandle,
     pub conference_destination_tasks:
         Mutex<ConferenceTaskRegistry<native_bridging::ConferenceApplicationCancellation>>,
-    pub bridges: Mutex<HashMap<PbxBridgeId, BridgeSession>>,
-    pub barge_bridges: Mutex<HashMap<PbxBridgeId, BargeBridgeSession>>,
-    pub forwarded_calls: Mutex<HashMap<PbxCallId, ForwardingOperation>>,
-    pub no_answer_plans: Mutex<HashMap<PbxCallId, SharedNoAnswerRoute>>,
-    pub no_answer_timers: Mutex<NoAnswerTimerRegistry>,
-    pub forwarding_entries: Mutex<ForwardingEntryRegistry>,
-    pub mobility: Mutex<MobilityRegistry>,
-    pub mobility_mutations: AsyncMutex<()>,
-    pub pending_mobility_prompts: Mutex<HashMap<(DeviceId, TransactionId), MobilitySlot>>,
-    pub next_mobility_prompt_id: AtomicU64,
-    pub parking_registry: Mutex<ParkingRegistry>,
-    pub pending_parks: Mutex<HashMap<CallId, PendingPark>>,
-    pub pending_retrievals: Mutex<HashMap<CallId, PendingRetrieval>>,
-    pub parking_notifications: Mutex<Vec<PendingParkingNotification>>,
-    pub mwi_subscriptions: Mutex<HashMap<String, NativeMwiSubscription>>,
-    pub blf_subscriptions: Mutex<BlfSubscriptions<AsteriskHints>>,
+    pub(super) bridge_runtime: super::bridge_owner::BridgeHandle,
+
     pub feature_store: FeatureStore<AsteriskDatabase>,
-    pub feature_mutations: Mutex<()>,
-    pub dnd_schedule_mutations: Mutex<()>,
-    pub dnd_schedule_store: crate::state::dnd_schedule::DndScheduleStore<AsteriskDatabase>,
-    pub dnd_schedules: Mutex<super::DndScheduleRegistry>,
+    pub(super) dnd_schedules: super::dnd_schedule::DndScheduleHandle,
     pub(super) background_runtime: super::background::BackgroundRuntimeHandle,
-    pub registration_contexts: Mutex<RuntimeRegistrationContexts>,
-    pub system_message: Mutex<Option<ActiveSystemMessage>>,
-    pub control_requests: mpsc::UnboundedSender<RuntimeControlRequest>,
-    pub call_signals: Mutex<RuntimeCallSignalQueue>,
+    pub control_requests: MailboxSender<RuntimeControlRequest>,
+    pub service_requests: MailboxSender<RuntimeServiceRequest>,
+    pub call_signals: crate::runtime::call_queue::CallQueueHandle<PbxCallId, RuntimeCallSignalKind>,
     pub(super) recording_trigger_wake: mpsc::Sender<()>,
     pub(super) pending_recording_triggers: Mutex<RuntimeRecordingTriggerQueue>,
-    pub ami_events: AmiEventPublisher<AsteriskManager>,
-    pub manager_registrations: Mutex<Vec<ManagerActionRegistration>>,
-    pub dialplan_registrations: Mutex<Vec<DialplanRegistration>>,
-    pub http_registrations: Mutex<Vec<HttpRegistration>>,
-}
-
-pub struct RuntimeCallSignalQueue {
-    pub next_sequence: u64,
-    pub sender: mpsc::UnboundedSender<RuntimeCallSignal>,
+    pub ami_events: crate::runtime::publication::PublicationHandle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,7 +112,55 @@ pub struct RuntimeCallSignalDeliveryError;
 
 pub type RuntimeCallSignalDeliveryResult = Result<(), RuntimeCallSignalDeliveryError>;
 
-pub type ChannelBinding = ResourceBinding<ChannelRef>;
+pub struct ChannelBinding {
+    native: Arc<ResourceBinding<ChannelRef>>,
+    pub signals: Arc<crate::runtime::call_queue::CallLease<PbxCallId, RuntimeCallSignalKind>>,
+}
+
+impl ChannelBinding {
+    pub fn new(
+        channel: ChannelRef,
+        signals: crate::runtime::call_queue::CallLease<PbxCallId, RuntimeCallSignalKind>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            native: ResourceBinding::new(channel),
+            signals: Arc::new(signals),
+        })
+    }
+}
+
+impl ChannelBinding {
+    pub fn replacement(&self, channel: ChannelRef) -> Arc<Self> {
+        Arc::new(Self {
+            native: ResourceBinding::new(channel),
+            signals: Arc::clone(&self.signals),
+        })
+    }
+}
+
+impl ChannelBinding {
+    pub fn enter(&self) -> Option<ChannelOperationPermit> {
+        self.native.enter()
+    }
+    pub fn try_enter(&self) -> Option<ChannelOperationPermit> {
+        self.native.try_enter()
+    }
+    pub fn suspend(&self) -> bool {
+        self.native.suspend()
+    }
+    pub fn resume(&self) -> bool {
+        self.native.resume()
+    }
+    pub fn replace_quiescent(&self, channel: ChannelRef) -> bool {
+        self.native.replace_quiescent(channel)
+    }
+    pub fn close(&self) -> Option<ChannelRef> {
+        self.native.close()
+    }
+    pub fn is_closed(&self) -> bool {
+        self.native.is_closed()
+    }
+}
 pub type ChannelOperationPermit = ResourcePermit<ChannelRef>;
 
 #[derive(Clone, Debug)]
@@ -150,6 +179,7 @@ pub enum RuntimeCallSignalKind {
     Hangup {
         handset_call_id: CallId,
     },
+    PreparedHangup(Box<super::services::RuntimeHangupPreparation>),
     Proceeding,
     Ringing,
     Progress,
@@ -157,11 +187,6 @@ pub enum RuntimeCallSignalKind {
     Congestion,
     VideoUpdate,
     PartyUpdate(Box<PartySnapshot>),
-}
-
-pub struct RuntimeRegistrationContexts {
-    pub registry: RegistrationContextRegistry<AsteriskRegistrationExtensions>,
-    pub suppressed_devices: HashSet<DeviceId>,
 }
 
 #[derive(Clone)]
@@ -183,48 +208,25 @@ pub struct RuntimeServiceRequest {
 
 #[derive(Clone)]
 pub struct RuntimeServiceProvider {
-    pub requests: mpsc::UnboundedSender<RuntimeServiceRequest>,
+    pub requests: MailboxSender<RuntimeServiceRequest>,
 }
 
 impl ServiceControlProvider for RuntimeServiceProvider {
     fn execute(&self, operation: ServiceOperation) -> Result<ServiceOutcome, ServiceProviderError> {
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
         let (response, result) = std::sync::mpsc::sync_channel(1);
         self.requests
-            .send(RuntimeServiceRequest {
-                operation,
-                response,
-            })
+            .try_send(
+                RuntimeServiceRequest {
+                    operation,
+                    response,
+                },
+                Some(deadline),
+            )
             .map_err(|_| ServiceProviderError::Unavailable)?;
         result
-            .recv_timeout(MANAGER_CONTROL_TIMEOUT)
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| ServiceProviderError::Unavailable)?
-    }
-}
-
-impl RuntimeRegistrationContexts {
-    pub fn new() -> Self {
-        Self {
-            registry: RegistrationContextRegistry::new(AsteriskRegistrationExtensions::new()),
-            suppressed_devices: HashSet::new(),
-        }
-    }
-
-    pub fn reconcile(
-        &mut self,
-        config: &ModuleConfig,
-        registered_devices: &[DeviceId],
-    ) -> Result<(), RegistrationRegistryError> {
-        let published = registered_devices
-            .iter()
-            .filter(|device| !self.suppressed_devices.contains(*device));
-        self.registry
-            .reconcile(configured_registration_appearances(config, published))
-    }
-}
-
-impl Default for RuntimeRegistrationContexts {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -245,20 +247,24 @@ pub struct RuntimeFeatureControlProvider {
 
 #[derive(Clone)]
 pub struct RuntimeControlProvider {
-    pub requests: mpsc::UnboundedSender<RuntimeControlRequest>,
+    pub requests: MailboxSender<RuntimeControlRequest>,
 }
 
 impl ControlProvider for RuntimeControlProvider {
     fn execute(&self, operation: ControlOperation) -> Result<ControlOutcome, ControlProviderError> {
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
         let (response, result) = std::sync::mpsc::sync_channel(1);
         self.requests
-            .send(RuntimeControlRequest {
-                operation,
-                response,
-            })
+            .try_send(
+                RuntimeControlRequest {
+                    operation,
+                    response,
+                },
+                Some(deadline),
+            )
             .map_err(|_| ControlProviderError::Unavailable)?;
         result
-            .recv_timeout(MANAGER_CONTROL_TIMEOUT)
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| ControlProviderError::Unavailable)?
     }
 }
@@ -326,10 +332,13 @@ pub fn execute_forwarding_mutation(
     kind: ForwardingKind,
     destination: Option<ForwardingDestination>,
 ) -> Result<FeatureControlOutcome, FeatureControlProviderError> {
-    let _feature_guard = access
+    let transaction = access
         .shared
-        .feature_mutations
-        .lock()
+        .configuration_transactions
+        .begin(
+            crate::runtime::configuration_transaction::ConfigurationOperation::Features,
+            Instant::now() + MANAGER_CONTROL_TIMEOUT,
+        )
         .map_err(|_| FeatureControlProviderError::Unavailable)?;
     let config = access.config();
     let device = config
@@ -354,14 +363,13 @@ pub fn execute_forwarding_mutation(
     if !enabled {
         return Err(FeatureControlProviderError::FeatureDisabled);
     }
-    let mutate = FeatureMutation::Forwarding { kind, destination };
+    let mutate = crate::state::features::FeatureMutation::SetForwarding { kind, destination };
     let outcome = FeatureOutcome::Forwarding {
         device_id: device_id.clone(),
         line,
         kind,
     };
-    let result =
-        update_device_features_locked(access, &config, &device_id, |state| mutate.apply(state));
+    let result = update_device_features(access, &config, &device_id, mutate, &transaction);
     let (previous, state) = match result {
         Ok(Some(states)) => states,
         Ok(None) => return Err(FeatureControlProviderError::DeviceNotFound),
@@ -370,25 +378,6 @@ pub fn execute_forwarding_mutation(
     publish_device_features(access, &device_id, &state);
     publish_feature_changes(access, &device_id, &previous, &state);
     Ok(outcome.complete(previous != state, &state))
-}
-
-pub enum FeatureMutation {
-    Forwarding {
-        kind: ForwardingKind,
-        destination: Option<ForwardingDestination>,
-    },
-}
-
-impl FeatureMutation {
-    pub fn apply(self, state: &mut DeviceFeatureState) {
-        match self {
-            Self::Forwarding { kind, destination } => match kind {
-                ForwardingKind::All => state.forwarding.all = destination,
-                ForwardingKind::Busy => state.forwarding.busy = destination,
-                ForwardingKind::NoAnswer => state.forwarding.no_answer = destination,
-            },
-        }
-    }
 }
 
 pub enum FeatureOutcome {
@@ -443,7 +432,7 @@ impl InventoryProvider for RuntimeInventoryProvider {
             .read()
             .map_err(|_| InventoryProviderError::Unavailable)?
             .clone();
-        let registrations = controller_step(&shared.controller, |controller| {
+        let registrations = (|controller: &crate::runtime::controller::ControllerSnapshot| {
             controller
                 .registered_devices()
                 .map(|(device_id, device)| {
@@ -458,7 +447,7 @@ impl InventoryProvider for RuntimeInventoryProvider {
                     )
                 })
                 .collect::<BTreeMap<_, _>>()
-        });
+        })(shared.controller.snapshot().as_ref());
         Ok(configured_inventory(&config, &registrations))
     }
 }
@@ -470,7 +459,8 @@ impl RuntimeStatusProvider for RuntimeInventoryProvider {
             .upgrade()
             .ok_or(RuntimeStatusProviderError::Unavailable)?;
         let media_statistics = self.phone.media_statistics();
-        let snapshot = controller_step(&shared.controller, move |controller| {
+        let snapshot = {
+            let controller = shared.controller.snapshot();
             let pbx_ids = controller
                 .calls()
                 .map(|call| call.pbx_id.0)
@@ -606,18 +596,18 @@ impl RuntimeStatusProvider for RuntimeInventoryProvider {
                 .into_iter()
                 .map(|(device_id, statistics)| {
                     let privacy =
-                        media_statistics_privacy(controller, &device_id, statistics.call_id);
+                        media_statistics_privacy(&controller, &device_id, statistics.call_id);
                     MediaStatisticsStatus::new(device_id, privacy, statistics)
                 })
                 .collect();
             snapshot
-        });
+        };
         Ok(snapshot)
     }
 }
 
 fn media_statistics_privacy(
-    controller: &Controller,
+    controller: &crate::runtime::controller::ControllerSnapshot,
     device_id: &DeviceId,
     call_id: CallId,
 ) -> MediaStatisticsPrivacy {
@@ -709,12 +699,12 @@ impl DeviceQueryProvider for RuntimeDeviceQueryProvider {
                 let pbx_id = NonNull::new(channel.as_raw().cast::<sys::ast_channel>())
                     .and_then(|channel| unsafe { native_channel::channel_pbx_id(channel) })
                     .ok_or(DeviceQueryLookupError::CurrentDeviceUnavailable)?;
-                controller_step(&shared.controller, |controller| {
-                    controller
-                        .active_or_primary_call_by_pbx(PbxCallId(pbx_id))
-                        .map(|call| call.device_id)
-                })
-                .ok_or(DeviceQueryLookupError::CurrentDeviceUnavailable)?
+                shared
+                    .controller
+                    .snapshot()
+                    .active_or_primary_call_by_pbx(PbxCallId(pbx_id))
+                    .map(|call| call.device_id)
+                    .ok_or(DeviceQueryLookupError::CurrentDeviceUnavailable)?
             }
         };
         Ok(device_query_snapshot(&shared, &device_id))
@@ -724,7 +714,8 @@ impl DeviceQueryProvider for RuntimeDeviceQueryProvider {
 pub fn device_query_snapshot(shared: &Shared, device_id: &DeviceId) -> Option<DeviceQuerySnapshot> {
     let config = shared.config.read_unpoisoned().clone();
     let configured = config.devices.get(device_id);
-    let (registration, features, calls) = controller_step(&shared.controller, |controller| {
+    let (registration, features, calls) = {
+        let controller = shared.controller.snapshot();
         let registered = controller.registered_device(device_id);
         let registration = registered.map(|device| RegisteredDeviceSummary {
             model: device.registration.device_type,
@@ -757,7 +748,7 @@ pub fn device_query_snapshot(shared: &Shared, device_id: &DeviceId) -> Option<De
             }
         }
         (registration, features, calls)
-    });
+    };
     if configured.is_none() && registration.is_none() {
         return None;
     }
@@ -818,12 +809,12 @@ impl LineQueryProvider for RuntimeLineQueryProvider {
                 let pbx_id = NonNull::new(channel.as_raw().cast::<sys::ast_channel>())
                     .and_then(|channel| unsafe { native_channel::channel_pbx_id(channel) })
                     .ok_or(LineQueryLookupError::CurrentLineUnavailable)?;
-                controller_step(&shared.controller, |controller| {
-                    controller
-                        .active_or_primary_call_by_pbx(PbxCallId(pbx_id))
-                        .map(|call| call.line)
-                })
-                .ok_or(LineQueryLookupError::CurrentLineUnavailable)?
+                shared
+                    .controller
+                    .snapshot()
+                    .active_or_primary_call_by_pbx(PbxCallId(pbx_id))
+                    .map(|call| call.line)
+                    .ok_or(LineQueryLookupError::CurrentLineUnavailable)?
             }
         };
         Ok(line_query_snapshot(&shared, &line))
@@ -853,8 +844,9 @@ pub fn line_query_snapshot(shared: &Shared, number: &str) -> Option<LineQuerySna
         .collect();
     appearances.extend(
         shared
-            .mobility
-            .lock_unpoisoned()
+            .controller
+            .snapshot()
+            .mobility()
             .appearances_for_line(number)
             .map(|roaming| LineAppearanceSnapshot {
                 id: roaming.binding.appearance.id.get(),
@@ -871,7 +863,8 @@ pub fn line_query_snapshot(shared: &Shared, number: &str) -> Option<LineQuerySna
     appearances.sort_by(|left, right| {
         (&left.device_id, left.instance, left.id).cmp(&(&right.device_id, right.instance, right.id))
     });
-    let calls = controller_step(&shared.controller, |controller| {
+    let calls = {
+        let controller = shared.controller.snapshot();
         let mut pbx_ids = HashSet::new();
         for configured in &mut appearances {
             configured.registered = controller.is_registered(&configured.device_id);
@@ -893,7 +886,7 @@ pub fn line_query_snapshot(shared: &Shared, number: &str) -> Option<LineQuerySna
             count_line_call_state(&mut calls, call.state);
         }
         calls
-    });
+    };
     Some(LineQuerySnapshot {
         number: line.number.clone(),
         label: line.label.clone(),
@@ -958,11 +951,11 @@ impl CalledPartyProvider for RuntimeCalledPartyProvider {
             .ok_or(CalledPartyProviderError::Unavailable)?;
         let state = unsafe { state_from_channel(channel.as_raw().cast::<sys::ast_channel>()) }
             .ok_or(CalledPartyProviderError::NotDriverChannel)?;
-        let owned = controller_step(&shared.controller, |controller| {
-            controller
-                .active_or_primary_call_by_pbx(state.pbx_id)
-                .is_some()
-        });
+        let owned = shared
+            .controller
+            .snapshot()
+            .active_or_primary_call_by_pbx(state.pbx_id)
+            .is_some();
         if !owned {
             return Err(CalledPartyProviderError::Unavailable);
         }
@@ -981,14 +974,14 @@ impl CalledPartyProvider for RuntimeCalledPartyProvider {
         AsteriskPartyUpdates::new()
             .set_connected_line(channel, &update)
             .map_err(|_| CalledPartyProviderError::NativeRejected)?;
-        let effects = controller_step(&shared.controller, |controller| {
-            controller.update_call_info_by_pbx(state.pbx_id, |current| {
-                let mut info = current.clone();
-                info.called_name = called_party.name.clone().unwrap_or_default();
-                info.called_number.clone_from(&called_party.number);
-                info
-            })
-        });
+        let effects = shared
+            .controller
+            .set_called_party(
+                state.pbx_id,
+                called_party.name.clone(),
+                called_party.number.clone(),
+            )
+            .unwrap_or_else(|_| Vec::new());
         for effect in effects {
             let DriverEffect::Handset(HandsetEffect::SetCallInfo {
                 device_id,
@@ -1021,13 +1014,12 @@ impl HandsetMessageProvider for RuntimeHandsetMessageProvider {
             .ok_or(HandsetMessageProviderError::Unavailable)?;
         let state = unsafe { state_from_channel(channel.as_raw().cast::<sys::ast_channel>()) }
             .ok_or(HandsetMessageProviderError::NotDriverChannel)?;
-        let call = controller_step(&shared.controller, |controller| {
-            controller.active_or_primary_call_by_pbx(state.pbx_id)
-        })
-        .ok_or(HandsetMessageProviderError::Unavailable)?;
-        let registered = controller_step(&shared.controller, |controller| {
-            controller.is_registered(&call.device_id)
-        });
+        let call = shared
+            .controller
+            .snapshot()
+            .active_or_primary_call_by_pbx(state.pbx_id)
+            .ok_or(HandsetMessageProviderError::Unavailable)?;
+        let registered = shared.controller.snapshot().is_registered(&call.device_id);
         if !registered {
             return Err(HandsetMessageProviderError::NotRegistered);
         }
@@ -1055,13 +1047,12 @@ impl HandsetCallIndicationProvider for RuntimeHandsetCallIndicationProvider {
             .ok_or(HandsetCallIndicationProviderError::Unavailable)?;
         let state = unsafe { state_from_channel(channel.as_raw().cast::<sys::ast_channel>()) }
             .ok_or(HandsetCallIndicationProviderError::NotDriverChannel)?;
-        let call = controller_step(&shared.controller, |controller| {
-            controller.active_or_primary_call_by_pbx(state.pbx_id)
-        })
-        .ok_or(HandsetCallIndicationProviderError::Unavailable)?;
-        let registered = controller_step(&shared.controller, |controller| {
-            controller.is_registered(&call.device_id)
-        });
+        let call = shared
+            .controller
+            .snapshot()
+            .active_or_primary_call_by_pbx(state.pbx_id)
+            .ok_or(HandsetCallIndicationProviderError::Unavailable)?;
+        let registered = shared.controller.snapshot().is_registered(&call.device_id);
         if !registered {
             return Err(HandsetCallIndicationProviderError::NotRegistered);
         }
@@ -1135,31 +1126,40 @@ impl CodecPreferenceProvider for RuntimeCodecPreferenceProvider {
         )
         .map_err(|_| CodecPreferenceProviderError::FormatUnavailable)?
         .codec;
-        let previous = controller_step(&shared.controller, |controller| {
-            controller.set_pre_dial_codec(pbx_id, selected)
-        })
-        .map_err(map_codec_preference_rejection)?;
-        let status = NonNull::new(channel.as_raw().cast::<sys::ast_channel>())
-            .ok_or(CodecPreferenceProviderError::NotDriverChannel)
-            .and_then(|channel| unsafe {
-                native_channel::set_audio_format(channel, native_audio_format(preferences[0]))
-                    .map_err(|_| CodecPreferenceProviderError::NativeRejected)
-            });
-        if status.is_err() {
-            let restored = controller_step(&shared.controller, |controller| {
-                controller.set_pre_dial_codec(pbx_id, previous)
-            });
-            return Err(if restored.is_ok() {
+        let native_channel = NonNull::new(channel.as_raw().cast::<sys::ast_channel>())
+            .ok_or(CodecPreferenceProviderError::NotDriverChannel)?;
+        let stored_preferences =
+            (preferences != policy.configured.as_slice()).then(|| preferences.to_vec());
+        let mutation = shared
+            .controller
+            .prepare_pre_dial_codec(pbx_id, selected, stored_preferences)
+            .map_err(|_| CodecPreferenceProviderError::Unavailable)?
+            .map_err(map_codec_preference_rejection)?;
+        let native_result = unsafe {
+            native_channel::set_audio_format(native_channel, native_audio_format(preferences[0]))
+        };
+        let committed = native_result.is_ok()
+            && shared
+                .controller
+                .commit_codec_mutation(mutation)
+                .unwrap_or(false);
+        if !committed {
+            let restored =
+                pbx_audio_format(mutation.previous)
+                    .ok()
+                    .is_some_and(|previous| unsafe {
+                        native_channel::set_audio_format(
+                            native_channel,
+                            native_audio_format(previous),
+                        )
+                        .is_ok()
+                    });
+            let _ = shared.controller.abort_codec_mutation(mutation);
+            return Err(if restored {
                 CodecPreferenceProviderError::NativeRejected
             } else {
                 CodecPreferenceProviderError::RollbackFailed
             });
-        }
-        let mut overrides = shared.audio_preferences.lock_unpoisoned();
-        if preferences == policy.configured.as_slice() {
-            overrides.remove(&pbx_id);
-        } else {
-            overrides.insert(pbx_id, preferences.to_vec());
         }
         Ok(())
     }
@@ -1178,7 +1178,7 @@ pub fn codec_preference_appearance(
     shared: &Shared,
     pbx_id: PbxCallId,
 ) -> Result<(DeviceId, u32), CodecPreferenceProviderError> {
-    controller_step(&shared.controller, |controller| {
+    (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let call = controller
             .pbx_call(pbx_id)
             .ok_or(CodecPreferenceProviderError::Unavailable)?;
@@ -1193,7 +1193,7 @@ pub fn codec_preference_appearance(
             .call_appearance(first)
             .ok_or(CodecPreferenceProviderError::Unavailable)?;
         Ok((appearance.device_id.clone(), appearance.line_instance))
-    })
+    })(shared.controller.snapshot().as_ref())
 }
 
 pub fn audio_preference_policy(
@@ -1207,12 +1207,12 @@ pub fn audio_preference_policy(
     let media = config
         .media_for_binding(&binding)
         .ok_or(CodecPreferenceProviderError::Unavailable)?;
-    let station = controller_step(&shared.controller, |controller| {
-        controller
-            .registered_device(device_id)
-            .map(|device| device.capabilities.clone())
-    })
-    .ok_or(CodecPreferenceProviderError::Unavailable)?;
+    let station = shared
+        .controller
+        .snapshot()
+        .registered_device(device_id)
+        .map(|device| device.capabilities.clone())
+        .ok_or(CodecPreferenceProviderError::Unavailable)?;
     let station = station.filter(|capabilities| !capabilities.audio().is_empty());
     let mut configured = Vec::new();
     for codec in media.codecs.iter().copied() {
@@ -1250,9 +1250,10 @@ pub fn codec_preference_context(
     let (device_id, line_instance) = codec_preference_appearance(shared, pbx_id)?;
     let policy = audio_preference_policy(shared, &device_id, line_instance)?;
     let effective = shared
-        .audio_preferences
-        .lock_unpoisoned()
-        .get(&pbx_id)
+        .controller
+        .snapshot()
+        .call_runtime_record(pbx_id)
+        .and_then(|record| record.audio_preferences.as_ref())
         .map(|preferences| {
             preferences
                 .iter()
@@ -1298,11 +1299,11 @@ impl ChannelQueryProvider for RuntimeChannelQueryProvider {
             }
             ChannelQueryTarget::Pbx(pbx_id) => (*pbx_id, None),
             ChannelQueryTarget::Call(call_id) => {
-                let pbx_id = controller_step(&shared.controller, |controller| {
-                    controller
-                        .appearance_for_call(*call_id)
-                        .map(|appearance| appearance.pbx_id)
-                });
+                let pbx_id = shared
+                    .controller
+                    .snapshot()
+                    .appearance_for_call(*call_id)
+                    .map(|appearance| appearance.pbx_id);
                 let Some(pbx_id) = pbx_id else {
                     return Ok(None);
                 };
@@ -1378,7 +1379,7 @@ pub fn channel_query_snapshot(
         metadata,
         active_call_id,
         appearances,
-    ) = controller_step(&shared.controller, |controller| {
+    ) = (|controller: &crate::runtime::controller::ControllerSnapshot| {
         let call = controller.pbx_call(pbx_id)?;
         let active_call_id = call
             .active_appearance()
@@ -1411,14 +1412,14 @@ pub fn channel_query_snapshot(
             active_call_id,
             appearances,
         ))
-    })?;
+    })(shared.controller.snapshot().as_ref())?;
     let name =
         referenced_channel(shared, pbx_id).and_then(|channel| channel_name(channel.resource()));
     let audio_packet_ms = shared
-        .audio_packet_ms
-        .lock_unpoisoned()
-        .get(&pbx_id)
-        .copied();
+        .controller
+        .snapshot()
+        .call_runtime_record(pbx_id)
+        .and_then(|record| record.audio_packet_ms);
     let audio_preferences = codec_preference_context(shared, pbx_id)
         .map(|context| context.effective)
         .unwrap_or_default();
@@ -1497,31 +1498,6 @@ pub fn video_media_state_summary(state: &VideoMediaState) -> ChannelMediaStateSu
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct PendingPark {
-    pub pbx_id: PbxCallId,
-    pub device_id: DeviceId,
-    pub requested_lot: Option<String>,
-    pub parkee_unique_id: Option<String>,
-    pub deadline: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub struct PendingRetrieval {
-    pub pbx_id: PbxCallId,
-    pub device_id: DeviceId,
-    pub lot: String,
-    pub slot: u32,
-    pub deadline: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub struct PendingParkingNotification {
-    pub device_id: DeviceId,
-    pub call_id: CallId,
-    pub deadline: Instant,
-}
-
 #[cfg(test)]
 mod media_statistics_privacy_tests {
     use super::*;
@@ -1566,7 +1542,7 @@ mod media_statistics_privacy_tests {
         let device_id = DeviceId::new("SEP001122334455").unwrap();
         let other_device = DeviceId::new("SEP112233445566").unwrap();
         let call_id = CallId(7);
-        let mut controller = Controller::new(Duration::from_secs(1));
+        let mut controller = crate::runtime::controller::Controller::new(Duration::from_secs(1));
 
         assert_eq!(
             media_statistics_privacy(&controller, &device_id, call_id),
@@ -1595,5 +1571,12 @@ mod media_statistics_privacy_tests {
             media_statistics_privacy(&controller, &device_id, call_id),
             MediaStatisticsPrivacy::Private
         );
+    }
+}
+
+#[cfg(feature = "telemetry")]
+impl Shared {
+    pub fn bridge_snapshot(&self) -> (Vec<super::PbxBridgeId>, Vec<super::PbxBridgeId>) {
+        self.bridge_runtime.snapshot_keys()
     }
 }

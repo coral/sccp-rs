@@ -2195,6 +2195,7 @@ async fn exact_session_offer_receipts_distinguish_stale_and_missing_sessions() {
             anonymous_hotline: false,
             tx: session_tx,
             admission: Arc::new(SessionAdmission::new()),
+            events: EventSender::from(mpsc::channel(1).0),
         },
     );
     let task = tokio::spawn(server.run());
@@ -2255,6 +2256,7 @@ async fn retirement_rejects_a_command_that_reserved_queue_capacity_first() {
         anonymous_hotline: false,
         tx,
         admission: Arc::new(SessionAdmission::new()),
+        events: EventSender::from(mpsc::channel(1).0),
     };
     let tx = session.tx.clone();
     let permit = tx.reserve().await.unwrap();
@@ -2715,6 +2717,7 @@ async fn expired_confirmed_commands_are_retired_at_both_queue_boundaries() {
             anonymous_hotline: false,
             tx: session_tx,
             admission: Arc::new(SessionAdmission::new()),
+            events: EventSender::from(mpsc::channel(1).0),
         },
     );
 
@@ -2732,6 +2735,7 @@ async fn expired_confirmed_commands_are_retired_at_both_queue_boundaries() {
     });
     let ServerCommand::Confirmed {
         command,
+        expected_generation,
         written,
         expires_at,
     } = server.command_rx.recv().await.unwrap()
@@ -2744,7 +2748,7 @@ async fn expired_confirmed_commands_are_retired_at_both_queue_boundaries() {
         Err(ServerError::CommandAcknowledgementTimeout)
     ));
     server
-        .dispatch_confirmed(command, written, expires_at)
+        .dispatch_confirmed(command, expected_generation, written, expires_at)
         .await;
     assert!(matches!(
         session_rx.try_recv(),
@@ -2764,6 +2768,7 @@ async fn expired_confirmed_commands_are_retired_at_both_queue_boundaries() {
     });
     let ServerCommand::Confirmed {
         command,
+        expected_generation,
         written,
         expires_at,
     } = server.command_rx.recv().await.unwrap()
@@ -2771,7 +2776,7 @@ async fn expired_confirmed_commands_are_retired_at_both_queue_boundaries() {
         panic!("expected another server-queued confirmed command")
     };
     server
-        .dispatch_confirmed(command, written, expires_at)
+        .dispatch_confirmed(command, expected_generation, written, expires_at)
         .await;
     let queued = session_rx.recv().await.unwrap();
     tokio::time::advance(ORDERING_ACKNOWLEDGEMENT_TIMEOUT).await;

@@ -24,10 +24,10 @@ use super::super::exports::{
     ChannelIndication, ChannelOperationError, ChannelRequest, ChannelRequestError, ChannelSecurity,
     DirectMediaPeer, MediaPeerUpdate, ModuleLifecycleError, RequestedChannel, answer_channel,
     channel_security, direct_media_allowed, fixup_channel, hangup_channel, has_active_channels,
-    indicate_channel, line_device_state, place_call, reload_module, request_channel,
-    resume_channel_operations, send_digit_begin_to_channel, send_digit_end_to_channel,
-    send_text_to_channel, set_channel_audio_format, start_module, stop_module,
-    suspend_channel_operations, update_rtp_peer,
+    indicate_channel, line_device_state, place_call, prepare_module_unload, reload_module,
+    request_channel, resume_channel_operations, send_digit_begin_to_channel,
+    send_digit_end_to_channel, send_text_to_channel, set_channel_audio_format, start_module,
+    stop_module, suspend_channel_operations, update_rtp_peer,
 };
 use super::handles::{NativeChannelRegistration, TemporarilyUnlockedChannel};
 use super::module_info::module_self;
@@ -797,6 +797,7 @@ pub(super) fn unload() -> Result<(), ModuleLifecycleError> {
     if has_active_channels() {
         return Err(ModuleLifecycleError);
     }
+    prepare_module_unload()?;
     let registration = native_registration().take();
     drop(registration);
     let result = stop_module();

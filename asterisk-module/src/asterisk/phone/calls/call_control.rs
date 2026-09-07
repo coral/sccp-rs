@@ -8,15 +8,15 @@ use super::super::{
     CallCompletionOwnership, CallState, DriverEffect, HookFlashAction, HotlineCallRequest, Instant,
     LogLevel, PbxAudioFormat, PhoneCommand, PhoneCommandAction, PhoneDeviceEvent,
     PhoneDeviceEventKind, RuntimeRecordings, SoftKey, ast_log, begin_parking_retrieval,
-    cancel_forwarding_entry_for_call, commit_forwarding_entry, controller_step,
-    execute_answer_call_transition, execute_call_transition, forwarding_entry_exists,
-    handle_barge_soft_key, handle_conference_destination, handle_conference_list_action,
-    handle_conference_soft_key, handle_dnd_button, handle_feature_button, handle_feature_soft_key,
-    handle_forwarding_backspace, handle_forwarding_digit, handle_hold_or_resume,
-    handle_join_soft_key, handle_mobility_button, handle_mobility_response, handle_park_request,
-    handle_parking_lot_button, handle_pickup_soft_key, handle_recording_button,
-    handle_voicemail_soft_key, preferred_codec, replace_and_commit_forwarding_entry,
-    replace_forwarding_entry, show_conference_list, toggle_monitor_recording, with_channel,
+    cancel_forwarding_entry_for_call, commit_forwarding_entry, execute_answer_call_transition,
+    execute_call_transition, forwarding_entry_exists, handle_barge_soft_key,
+    handle_conference_destination, handle_conference_list_action, handle_conference_soft_key,
+    handle_dnd_button, handle_feature_button, handle_feature_soft_key, handle_forwarding_backspace,
+    handle_forwarding_digit, handle_hold_or_resume, handle_join_soft_key, handle_mobility_button,
+    handle_mobility_response, handle_park_request, handle_parking_lot_button,
+    handle_pickup_soft_key, handle_recording_button, handle_voicemail_soft_key, preferred_codec,
+    replace_and_commit_forwarding_entry, replace_forwarding_entry, show_conference_list,
+    toggle_monitor_recording, with_channel,
 };
 use super::handle_handset_hangup;
 
@@ -47,38 +47,55 @@ pub(super) async fn handle_call_control_event(
                 line_instance.get(),
                 &PbxAudioFormat::ALL,
             );
-            let ringing = controller_step(&access.shared.controller, |controller| {
-                controller
-                    .call(call_id)
-                    .is_some_and(|call| call.state == CallState::Ringing)
-            });
+            let ringing = access
+                .shared
+                .controller
+                .snapshot()
+                .call(call_id)
+                .is_some_and(|call| call.state == CallState::Ringing);
             if ringing {
-                let transition = controller_step(&access.shared.controller, |controller| {
-                    controller.begin_active_call_switch_transaction(&device_id, call_id)
-                });
+                let transition = access
+                    .shared
+                    .controller
+                    .begin_active_call_switch_transaction(&device_id, call_id)
+                    .unwrap_or_else(|_| {
+                        Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                    });
                 if let Ok(transition) = transition {
                     execute_answer_call_transition(access, transition).await;
                 }
                 Vec::new()
             } else if let Some((binding, codec)) = binding.zip(codec) {
-                let transition = controller_step(&access.shared.controller, |controller| {
+                let transition = {
                     if let Some(destination) = hotline {
-                        controller.begin_hotline_call_transaction(HotlineCallRequest {
-                            handset_call_id: call_id,
-                            binding,
-                            codec,
-                            destination,
-                            now: Instant::now(),
-                        })
+                        access
+                            .shared
+                            .controller
+                            .begin_hotline_call_transaction(HotlineCallRequest {
+                                handset_call_id: call_id,
+                                binding,
+                                codec,
+                                destination,
+                                now: Instant::now(),
+                            })
+                            .unwrap_or_else(|_| {
+                                Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                            })
                     } else {
-                        controller.begin_additional_phone_call_transaction(
-                            call_id,
-                            binding,
-                            codec,
-                            Instant::now(),
-                        )
+                        access
+                            .shared
+                            .controller
+                            .begin_additional_phone_call_transaction(
+                                call_id,
+                                binding,
+                                codec,
+                                Instant::now(),
+                            )
+                            .unwrap_or_else(|_| {
+                                Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                            })
                     }
-                });
+                };
                 if let Ok(transition) = transition {
                     execute_call_transition(access, transition).await;
                 }
@@ -123,9 +140,11 @@ pub(super) async fn handle_call_control_event(
             if handle_forwarding_digit(access, &device_id, call_id, digit).await {
                 Vec::new()
             } else {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.digit(call_id, digit, Instant::now())
-                })
+                access
+                    .shared
+                    .controller
+                    .digit(call_id, digit, Instant::now())
+                    .unwrap_or_else(|_| Vec::new())
             }
         }
         PhoneDeviceEventKind::EnblocCall {
@@ -134,9 +153,11 @@ pub(super) async fn handle_call_control_event(
             if replace_and_commit_forwarding_entry(access, &device_id, call_id, &number).await {
                 Vec::new()
             } else {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.enbloc(call_id, number)
-                })
+                access
+                    .shared
+                    .controller
+                    .enbloc(call_id, number)
+                    .unwrap_or_else(|_| Vec::new())
             }
         }
         PhoneDeviceEventKind::SpeedDial {
@@ -153,9 +174,11 @@ pub(super) async fn handle_call_control_event(
             if forwarding_handled {
                 Vec::new()
             } else {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.speed_dial(call_id, number, await_further_digits, Instant::now())
-                })
+                access
+                    .shared
+                    .controller
+                    .speed_dial(call_id, number, await_further_digits, Instant::now())
+                    .unwrap_or_else(|_| Vec::new())
             }
         }
         PhoneDeviceEventKind::FeatureButton { instance } => {
@@ -190,9 +213,11 @@ pub(super) async fn handle_call_control_event(
                     })
             };
             if let Some(destination) = destination {
-                controller_step(&access.shared.controller, |controller| {
-                    controller.enbloc(call_id, destination)
-                })
+                access
+                    .shared
+                    .controller
+                    .enbloc(call_id, destination)
+                    .unwrap_or_else(|_| Vec::new())
             } else {
                 let _ = access
                     .phone
@@ -240,9 +265,13 @@ pub(super) async fn handle_call_control_event(
             soft_key: SoftKey::Answer,
             ..
         } => {
-            let transition = controller_step(&access.shared.controller, |controller| {
-                controller.begin_active_call_switch_transaction(&device_id, call_id)
-            });
+            let transition = access
+                .shared
+                .controller
+                .begin_active_call_switch_transaction(&device_id, call_id)
+                .unwrap_or_else(|_| {
+                    Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                });
             if let Ok(transition) = transition {
                 execute_answer_call_transition(access, transition).await;
             }
@@ -353,9 +382,11 @@ pub(super) async fn handle_call_control_event(
             soft_key: SoftKey::Select,
             ..
         } => {
-            let selected = controller_step(&access.shared.controller, |controller| {
-                controller.toggle_call_selected(&device_id, call_id)
-            });
+            let selected = access
+                .shared
+                .controller
+                .toggle_call_selected(&device_id, call_id)
+                .unwrap_or_else(|_| None);
             if let Some(selected) = selected {
                 let _ = access
                     .phone
@@ -438,11 +469,12 @@ pub(super) async fn handle_call_control_event(
             soft_key: SoftKey::Callback,
             ..
         } => {
-            let owner = controller_step(&access.shared.controller, |controller| {
-                controller
-                    .call(call_id)
-                    .map(|call| (call.device_id.clone(), call.sccp_id, call.pbx_id))
-            });
+            let owner = access
+                .shared
+                .controller
+                .snapshot()
+                .call(call_id)
+                .map(|call| (call.device_id.clone(), call.sccp_id, call.pbx_id));
             let result = owner
                 .as_ref()
                 .and_then(|(owner_device, owner_call_id, pbx_id)| {
@@ -517,30 +549,42 @@ pub(super) async fn handle_call_control_event(
             call_id: Some(call_id),
             soft_key: SoftKey::VideoMode,
             ..
-        } => controller_step(&access.shared.controller, |controller| {
-            controller.video_mode_for_device(&device_id, call_id)
-        }),
+        } => access
+            .shared
+            .controller
+            .video_mode_for_device(&device_id, call_id)
+            .unwrap_or_else(|_| Vec::new()),
         PhoneDeviceEventKind::SoftKey {
             call_id: Some(call_id),
             soft_key,
             ..
-        } => controller_step(&access.shared.controller, |controller| match soft_key {
-            SoftKey::Answer => controller.phone_answer(call_id),
-            SoftKey::Intercept => controller.steal(call_id),
-            SoftKey::Dial => controller.enbloc(call_id, String::new()),
+        } => match soft_key {
+            SoftKey::Answer => access
+                .shared
+                .controller
+                .phone_answer(call_id)
+                .unwrap_or_default(),
+            SoftKey::Intercept => access.shared.controller.steal(call_id).unwrap_or_default(),
+            SoftKey::Dial => access
+                .shared
+                .controller
+                .enbloc(call_id, String::new())
+                .unwrap_or_default(),
             _ => Vec::new(),
-        }),
+        },
         PhoneDeviceEventKind::LineButton {
             call_id: Some(call_id),
             ..
         } => {
-            let state = controller_step(&access.shared.controller, |controller| {
-                controller.call_state(call_id)
-            });
+            let state = access.shared.controller.snapshot().call_state(call_id);
             if matches!(state, Some(CallState::Held | CallState::SharedHeld)) {
-                let transition = controller_step(&access.shared.controller, |controller| {
-                    controller.begin_active_call_switch_transaction(&device_id, call_id)
-                });
+                let transition = access
+                    .shared
+                    .controller
+                    .begin_active_call_switch_transaction(&device_id, call_id)
+                    .unwrap_or_else(|_| {
+                        Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                    });
                 if let Ok(transition) = transition {
                     execute_call_transition(access, transition).await;
                 }
@@ -548,9 +592,13 @@ pub(super) async fn handle_call_control_event(
             } else {
                 match state {
                     Some(CallState::Ringing | CallState::Connected) => {
-                        let transition = controller_step(&access.shared.controller, |controller| {
-                            controller.begin_active_call_switch_transaction(&device_id, call_id)
-                        });
+                        let transition = access
+                            .shared
+                            .controller
+                            .begin_active_call_switch_transaction(&device_id, call_id)
+                            .unwrap_or_else(|_| {
+                                Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                            });
                         if let Ok(transition) = transition {
                             if state == Some(CallState::Ringing) {
                                 execute_answer_call_transition(access, transition).await;
@@ -560,11 +608,11 @@ pub(super) async fn handle_call_control_event(
                         }
                         Vec::new()
                     }
-                    Some(CallState::RemoteInUse) => {
-                        controller_step(&access.shared.controller, |controller| {
-                            controller.steal(call_id)
-                        })
-                    }
+                    Some(CallState::RemoteInUse) => access
+                        .shared
+                        .controller
+                        .steal(call_id)
+                        .unwrap_or_else(|_| Vec::new()),
                     _ => Vec::new(),
                 }
             }
@@ -573,14 +621,20 @@ pub(super) async fn handle_call_control_event(
             call_id: Some(call_id),
             line_instance,
         } => {
-            let action = controller_step(&access.shared.controller, |controller| {
-                controller.hook_flash_action(&device_id, call_id)
-            });
+            let action = access
+                .shared
+                .controller
+                .snapshot()
+                .hook_flash_action(&device_id, call_id);
             match action {
                 HookFlashAction::AnswerWaiting(waiting_call_id) => {
-                    let transition = controller_step(&access.shared.controller, |controller| {
-                        controller.begin_active_call_switch_transaction(&device_id, waiting_call_id)
-                    });
+                    let transition = access
+                        .shared
+                        .controller
+                        .begin_active_call_switch_transaction(&device_id, waiting_call_id)
+                        .unwrap_or_else(|_| {
+                            Err(crate::runtime::controller::CallSwitchRejection::Unavailable)
+                        });
                     if let Ok(transition) = transition {
                         execute_answer_call_transition(access, transition).await;
                     }

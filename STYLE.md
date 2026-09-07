@@ -12,7 +12,8 @@ guide:
   version-specific structs.
 - Do not add comments that merely restate obvious code.
 - Do not keep around old structs / enums when refactoring, we don't want "BlaLegacy" for "compatibility purposes"
-- Do not write tests for the sake of tests, we are writing rust, we should express thigns in such a way that we can trust the compiler.
+- Do not write tests for the sake of tests. Express structural guarantees in
+  types; test ordering, failure, and lifetime behavior the compiler cannot prove.
 
 ## Design priorities
 
@@ -209,13 +210,19 @@ data, or opaque packet contents in `Debug`, errors, logs, or management events.
 - Centralize mutable domain state in the component that owns the invariant.
   Other layers request a transition; they do not patch its maps directly.
 - Have state transitions return owned outcomes, plans, or ordered effects.
-  Release the state lock before awaiting, calling native code, publishing an
-  event, or doing other adapter I/O.
+  An owner loop must not await effects inline. In code that still uses shared
+  state, release the state lock before awaiting, calling native code,
+  publishing an event, or doing other adapter I/O. A queue around shared mutable
+  registries is not an ownership migration.
 - Treat effect order as part of the contract. Ordinary execution stops at the
   first failure; committed terminal cleanup attempts every remaining effect.
 - Use explicit prepare/commit/abort or stage/validate/commit phases for
-  multi-resource work. RAII guards and `Drop` should compensate for abandoned
-  pre-commit work.
+  multi-resource work. Use RAII for local rollback, unpublished resources, and
+  lifetime permits. Asynchronous compensation belongs to the state owner;
+  `Drop` may release native resources it exclusively owns, but must not start
+  new native operations, spawn detached work, or depend on obtaining ordinary
+  command capacity. A cancellation sent from `Drop` must already own
+  guaranteed delivery capacity and be idempotent.
 - Use generations, tokens, and exact identities to reject stale callbacks,
   acknowledgements, timeouts, and replacement-session work.
 - Use `Arc` for explicit shared ownership and `Weak` when callbacks must not
@@ -230,6 +237,52 @@ data, or opaque packet contents in `Debug`, errors, logs, or management events.
   native owners. Make shutdown idempotent where callers may race.
 - Recover poisoned locks only at a boundary with an explicit policy; do not
   scatter ad hoc poison recovery through domain code.
+
+#### Runtime owner boundaries
+
+Apply these constraints when introducing an owner or migrating a subsystem:
+
+- One component owns each mutable invariant throughout the migration. Handles
+  expose typed operations and immutable snapshots, not mutable registries or
+  arbitrary closures over the controller. Executors receive owned plans and
+  scoped native handles; they cannot mutate controller state.
+- Reserve all overlapping resources before dispatch. Resource keys must remain
+  conservative while a request waits; preparation revalidates identities and
+  generations. Unrelated work and deadlines must continue to progress, and
+  matching acknowledgements/cancellations must not wait behind the operation
+  they complete.
+- Keep protocol readers able to consume acknowledgements and terminal messages
+  when ordinary event admission is saturated. A separate completion receiver is
+  insufficient if sending an earlier ordinary event prevents reading the reply.
+- Bound admitted work through completion and compensation, including owner-side
+  pending queues and finished worker results. Moving a message out of a mailbox
+  must not release its budget. Reserve teardown and completion delivery before
+  ordinary traffic can exhaust capacity; coalesce duplicate terminal work.
+- Separate admission, completed delivery, and response timeout in types and
+  names. A response timeout does not prove that an operation never executed.
+  Expire queued requests before starting effects; retain ownership of work that
+  has already started when the requester stops waiting.
+- Track the actual blocking job, not just an async wrapper awaiting it. Close
+  admission before draining. A state-transition panic must not detach native
+  jobs during unwinding, and a timed-out join is not evidence that native work
+  has stopped. Unfinished native work must prevent successful unload.
+  Failed startup has the same obligation: guard threads created before fallible
+  registration so returning an error to the native loader closes and joins them.
+- Preserve a policy change's invalidation and fallback decisions when updates
+  are coalesced. Reject stale completions in both published snapshots and the
+  cache used for future fallback; equality with an earlier configuration does
+  not make an old completion current again.
+- Native callback delivery must never wait for its subscription worker, which
+  may be joining that callback during unregistration. Reserve delivery space
+  before subscribing; retain initial and terminal updates when coalescing, and
+  serve subscription keys fairly. Reclaim a retired subscription's pending
+  delivery only after its callbacks have joined.
+- Keep narrow synchronization for native lifetime admission, callback draining,
+  resource replacement, and immutable snapshot publication. Borrowed C pointers
+  stay on their callback thread. Split prepare/native-operation/commit rather
+  than moving a borrowed pointer to a worker or blocking a thread needed for
+  the reply. Native unload should reject an active operation promptly when
+  waiting under loader locks or callback re-entry could deadlock.
 
 ### FFI and unsafe code
 
@@ -318,14 +371,17 @@ Tests are executable contracts, not incidental coverage.
 - Use table-driven cases when every enum state, protocol version, backend, or
   boundary value needs the same assertion.
 - Use fake trait implementations to record requests and inject failures.
-  Assert that adapter or service work occurs after controller locks are
-  released.
+  Assert that adapter work does not retain state ownership, that unrelated
+  work progresses, and that failure/shutdown joins the actual native jobs.
 - Prefer paused Tokio time, injected clocks, channels, and bounded timeouts to
   timing-dependent sleeps.
 - Test RAII and FFI ownership for exactly-once destruction, failed preparation,
   handoff, callback races, and shutdown while work is in flight.
 - Source-inspection architecture tests are intentional. Update them when a
   legitimate boundary or exported callback changes; do not work around them.
+  Assert ownership and ordering rather than requiring a particular mutex,
+  task-spawn expression, or local variable name. Prefer behavioral regression
+  tests for races that can be reproduced with controlled completions.
 - `unwrap` and `expect` are normal in tests when the message identifies the
   fixture assumption being established.
 

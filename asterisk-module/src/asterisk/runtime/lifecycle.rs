@@ -7,38 +7,34 @@ use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
 use super::{
-    Access, AmiEventPublisher, Arc, AsteriskDatabase, AsteriskDialplan, AsteriskHints,
-    AsteriskHttp, AsteriskManager, AsteriskParking, AsyncMutex, AtomicU64, BTreeMap,
-    BlfSubscriptions, Builder, CallId, CallSelectionOrder, Codec, ConferenceTaskRegistry,
+    Access, Arc, AsteriskDatabase, AsteriskDialplan, AsteriskHttp, AsteriskManager,
+    AsteriskParking, Builder, CallId, CallSelectionOrder, Codec, ConferenceTaskRegistry,
     ConfigReconciliation, ConfigReconciliationTrigger, ConfigurationProvider, Controller, DeviceId,
-    Duration, ExternalAddressCache, FeatureStore, ForwardingEntryRegistry, HashMap, HashSet,
-    Instant, LineBinding, LineInstance, LogLevel, MODULE, MediaAnchorRegistry, MediaAnchorRestores,
-    MediaEndpoint, MobilityRegistry, Module, ModuleConfig, Mutex, MutexExt as _,
-    NoAnswerTimerRegistry, ParkingRegistry, PbxCallId, PhoneCommand, PhoneCommandAction,
-    RECORDING_TRIGGER_WAKE_CAPACITY, RegistrationFallback, RegistrationRegistryError,
-    RegistrationTokenPolicy, ReloadPlan, ReloadSelection, RuntimeCallSignal,
-    RuntimeCallSignalDeliveryResult, RuntimeCallSignalKind, RuntimeCallSignalQueue,
-    RuntimeCalledPartyProvider, RuntimeChannelQueryProvider, RuntimeCodecPreferenceProvider,
-    RuntimeControlProvider, RuntimeDeviceQueryProvider, RuntimeDirectoryProvider,
-    RuntimeFeatureControlProvider, RuntimeHandsetCallIndicationProvider,
-    RuntimeHandsetMessageProvider, RuntimeInventoryProvider, RuntimeLineQueryProvider,
-    RuntimeRecordingTriggerQueue, RuntimeRegistrationContexts, RuntimeServiceProvider, RwLock,
+    Duration, ExternalAddressCache, FeatureStore, HashMap, HashSet, Instant, LineBinding,
+    LineInstance, LogLevel, MODULE, MediaEndpoint, Module, ModuleConfig, Mutex, MutexExt as _,
+    PbxCallId, PhoneCommand, PhoneCommandAction, RECORDING_TRIGGER_WAKE_CAPACITY,
+    RegistrationFallback, RegistrationTokenPolicy, ReloadPlan, ReloadSelection,
+    RuntimeCallSignalDeliveryResult, RuntimeCallSignalKind, RuntimeCalledPartyProvider,
+    RuntimeChannelQueryProvider, RuntimeCodecPreferenceProvider, RuntimeControlProvider,
+    RuntimeDeviceQueryProvider, RuntimeDirectoryProvider, RuntimeFeatureControlProvider,
+    RuntimeHandsetCallIndicationProvider, RuntimeHandsetMessageProvider, RuntimeInventoryProvider,
+    RuntimeLineQueryProvider, RuntimeRecordingTriggerQueue, RuntimeServiceProvider, RwLock,
     RwLockExt as _, Semaphore, Server, ServerConfig, ServerIngress, Shared, SignalingQos,
     SignalingSocket, StagedMwiSubscriptions, StationIo, StationTransport, SystemHostResolver,
-    adapters, anonymous_hotline_definition, ast_log, configured_mobility_button, controller_step,
-    dial_terminator_digit, install_reloaded_dnd_schedules, log_feature_store_error,
-    mobility_device_registered, mpsc, native_channel, publish_device_features,
-    publish_feature_changes, publish_line, raw, register_called_party_application,
-    register_channel_query, register_codec_preference_application, register_control_actions,
-    register_device_query, register_directory_http, register_feature_control_actions,
+    adapters, anonymous_hotline_definition, ast_log, dial_terminator_digit,
+    install_reloaded_dnd_schedules, log_feature_store_error, mobility_device_registered, mpsc,
+    native_channel, publish_device_features, publish_feature_changes, publish_line, raw,
+    register_called_party_application, register_channel_query,
+    register_codec_preference_application, register_control_actions, register_device_query,
+    register_directory_http, register_feature_control_actions,
     register_handset_call_indication_application, register_handset_message_application,
     register_inventory_actions, register_line_query, register_runtime_status_actions,
     register_service_control_actions, run_call_signals, run_dnd_schedule_tick, run_events,
-    shutdown_conferences, shutdown_one_way_microphones, shutdown_remote_hangups, uninstall_blf,
+    shutdown_conferences, shutdown_one_way_microphones, shutdown_remote_hangups,
     uninstall_device_blf,
 };
 use crate::call::parking::ParkingEventSource as _;
-use crate::media::encryption::AudioEncryptionAdmissions;
+use crate::runtime::mailbox::{RUNTIME_MAILBOX_CAPACITY, mailbox};
 use crate::runtime::tls::RuntimeTlsAcceptor;
 use crate::state::background::BackgroundStore;
 
@@ -234,12 +230,12 @@ async fn run_secure_listener(
     listener: Option<TcpListener>,
     acceptor: Option<RuntimeTlsAcceptor>,
     ingress: ServerIngress,
+    handshakes: &mut JoinSet<()>,
 ) -> Result<(), String> {
     let Some((listener, acceptor)) = listener.zip(acceptor) else {
         return std::future::pending().await;
     };
     let permits = secure_handshake_limiter();
-    let mut handshakes = JoinSet::new();
     loop {
         while let Some(result) = handshakes.try_join_next() {
             if let Err(error) = result {
@@ -461,22 +457,35 @@ impl Module {
         let feature_states = feature_store
             .load_configuration(&config)
             .map_err(|error| format!("unable to restore configured feature state: {error}"))?;
-        let (blf_events_tx, blf_events) = mpsc::unbounded_channel();
-        let (parking_events_tx, parking_events) = mpsc::unbounded_channel();
-        let (control_requests_tx, control_requests) = mpsc::unbounded_channel();
-        let (service_requests_tx, service_requests) = mpsc::unbounded_channel();
+        let (schedule_runtime, schedule_mailbox) = super::dnd_schedule::schedule_channel();
+        let (presence, presence_mailbox) = super::presence_owner::presence_channel();
+        let (workers, worker_owner) = crate::runtime::workers::workers();
+        let (parking_events_tx, mut parking_events) =
+            crate::runtime::parking_events::parking_events(RUNTIME_MAILBOX_CAPACITY);
+        let parking_callback = parking_events_tx.clone();
+        let (control_requests_tx, control_requests) = mailbox(RUNTIME_MAILBOX_CAPACITY);
+        let (service_requests_tx, service_requests) = mailbox(RUNTIME_MAILBOX_CAPACITY);
         let (background_runtime, background_mailbox) =
             super::background::background_runtime_channel();
-        let (call_signals_tx, call_signals) = mpsc::unbounded_channel();
+        let (call_signals_tx, call_signals) =
+            crate::runtime::call_queue::call_queue(RUNTIME_MAILBOX_CAPACITY);
         let (recording_trigger_wake, recording_triggers) =
             mpsc::channel(RECORDING_TRIGGER_WAKE_CAPACITY);
         let parking_subscription = AsteriskParking::new()
             .subscribe(move |event| {
-                let _ = parking_events_tx.send(event);
+                if let Err(error) = parking_callback.publish(event) {
+                    ast_log(
+                        LogLevel::Warning,
+                        &format!("parking event admission failed: {error}"),
+                    );
+                }
             })
             .map_err(|error| format!("unable to subscribe to parking events: {error}"))?;
-        let (server, phone, events, ingress) = Server::with_ingress(server_config, definitions)
+        let (mut server, phone, events, ingress) = Server::with_ingress(server_config, definitions)
             .map_err(|error| format!("unable to start SCCP listener: {error}"))?;
+        let priority_events = server
+            .enable_priority_events(RUNTIME_MAILBOX_CAPACITY)
+            .map_err(|error| format!("unable to reserve SCCP completion delivery: {error}"))?;
         let mut controller = Controller::with_digit_timeouts(
             Duration::from_millis(config.general.first_digit_timeout_ms),
             Duration::from_millis(config.general.interdigit_timeout_ms),
@@ -503,87 +512,113 @@ impl Module {
                 .map(|(line, features)| (line.clone(), features.incoming_limit)),
         );
         controller.replace_feature_states(feature_states);
-        let mut external_addresses = ExternalAddressCache::new(SystemHostResolver);
-        if let Err(error) =
-            external_addresses.refresh(config.general.network.external.as_ref(), Instant::now())
-        {
-            ast_log(
-                LogLevel::Warning,
-                &format!("unable to resolve configured external address: {error}"),
+        let initial_external_policy = config.general.network.external.clone();
+        let external_addresses = runtime
+            .block_on(runtime.spawn_blocking(move || {
+                let mut cache = ExternalAddressCache::new(SystemHostResolver);
+                if let Err(error) = cache.refresh(initial_external_policy.as_ref(), Instant::now())
+                {
+                    ast_log(
+                        LogLevel::Warning,
+                        &format!("unable to resolve configured external address: {error}"),
+                    );
+                }
+                cache
+            }))
+            .map_err(|error| format!("external-address initialization failed: {error}"))?;
+        let (external_addresses, resolver_owner) =
+            crate::runtime::resolver::ExternalAddressOwner::new(
+                external_addresses,
+                config.general.network.external.clone(),
+                |error| {
+                    ast_log(
+                        LogLevel::Warning,
+                        &format!("unable to refresh configured external address: {error}"),
+                    )
+                },
             );
-        }
+        let (ami_events, publication_owner) =
+            crate::runtime::publication::publication_runtime(AsteriskManager::new(), |error| {
+                ast_log(
+                    LogLevel::Warning,
+                    &format!("unable to publish a management event: {error}"),
+                )
+            });
+        let (bridge_runtime, bridge_owner) = super::bridge_owner::bridge_runtime();
+        let bridge_task = runtime.spawn(bridge_owner.run());
+        let close_bridges = bridge_runtime.clone();
+        let bridge_task = crate::runtime::startup::StartupTask::new(
+            runtime.handle().clone(),
+            bridge_task,
+            move || close_bridges.close(),
+        );
+        let (media_runtime, media_task) = super::media_owner::MediaOwner::start()
+            .map_err(|error| format!("media owner initialization failed: {error}"))?;
+        let close_media = media_runtime.clone();
+        let media_task =
+            crate::runtime::startup::StartupThread::new(media_task, move || close_media.close());
+        let (controller, controller_owner) =
+            crate::runtime::controller::ownership::ControllerOwner::new(controller).map_err(
+                |error| format!("unable to reserve controller completion capacity: {error}"),
+            )?;
+        let controller_runtime = runtime.handle().clone();
+        let controller_task = std::thread::Builder::new()
+            .name("sccp-controller".into())
+            .spawn(move || controller_runtime.block_on(controller_owner.run()))
+            .map_err(|error| format!("unable to start controller owner: {error}"))?;
+        let close_controller = controller.clone();
+        let controller_task =
+            crate::runtime::startup::StartupThread::new(controller_task, move || {
+                close_controller.close()
+            });
+        let (configuration_transactions, configuration_owner) =
+            crate::runtime::configuration_transaction::configuration_transactions();
+        let configuration_runtime =
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    format!("unable to create configuration transaction runtime: {error}")
+                })?;
+        let configuration_task = std::thread::Builder::new()
+            .name("sccp-config".into())
+            .spawn(move || {
+                configuration_runtime.block_on(configuration_owner.run());
+            })
+            .map_err(|error| format!("unable to start configuration transaction owner: {error}"))?;
+        let close_configuration = configuration_transactions.clone();
+        let configuration_task =
+            crate::runtime::startup::StartupThread::new(configuration_task, move || {
+                close_configuration.close()
+            });
         let shared = Arc::new(Shared {
-            controller: Mutex::new(controller),
-            external_addresses: Mutex::new(external_addresses),
-            published_line_states: Mutex::new(HashMap::new()),
+            controller,
+            event_diagnostics: RwLock::new(Arc::new(super::services::EventDiagnostics::default())),
+            external_addresses,
+            presence,
+            parking_events: parking_events_tx,
+            workers,
             config: RwLock::new(Arc::new(config)),
             config_provider,
             config_reconciliation: Arc::new(ConfigReconciliation::default()),
-            config_reloads: Mutex::new(()),
+            configuration_transactions,
             channels: Mutex::new(HashMap::new()),
-            assigned_channel_ids: Mutex::new(HashMap::new()),
-            audio_packet_ms: Mutex::new(HashMap::new()),
-            audio_preferences: Mutex::new(HashMap::new()),
-            audio_encryption_admissions: Mutex::new(AudioEncryptionAdmissions::default()),
-            media_anchor_mutations: AsyncMutex::new(()),
-            media_anchors: Mutex::new(MediaAnchorRegistry::default()),
-            media_anchor_restores: Mutex::new(MediaAnchorRestores::default()),
-            conference_announcements: Mutex::new(HashMap::new()),
-            conference_announcement_mutations: Mutex::new(()),
-            next_conference_announcement_id: AtomicU64::new(1),
+            channel_allocations: crate::runtime::resource::ResourceBinding::new(()),
+
+            media_runtime,
             conference_destination_tasks: Mutex::new(ConferenceTaskRegistry::default()),
-            bridges: Mutex::new(HashMap::new()),
-            barge_bridges: Mutex::new(HashMap::new()),
-            forwarded_calls: Mutex::new(HashMap::new()),
-            no_answer_plans: Mutex::new(HashMap::new()),
-            no_answer_timers: Mutex::new(NoAnswerTimerRegistry::default()),
-            forwarding_entries: Mutex::new(ForwardingEntryRegistry::default()),
-            mobility: Mutex::new(MobilityRegistry::new()),
-            mobility_mutations: AsyncMutex::new(()),
-            pending_mobility_prompts: Mutex::new(HashMap::new()),
-            next_mobility_prompt_id: AtomicU64::new(1),
-            parking_registry: Mutex::new(ParkingRegistry::default()),
-            pending_parks: Mutex::new(HashMap::new()),
-            pending_retrievals: Mutex::new(HashMap::new()),
-            parking_notifications: Mutex::new(Vec::new()),
-            mwi_subscriptions: Mutex::new(HashMap::new()),
-            blf_subscriptions: Mutex::new(BlfSubscriptions::new(
-                AsteriskHints::new(),
-                blf_events_tx,
-            )),
+            bridge_runtime,
+
             feature_store,
-            feature_mutations: Mutex::new(()),
-            dnd_schedule_mutations: Mutex::new(()),
-            dnd_schedule_store,
-            dnd_schedules: Mutex::new(dnd_schedules),
+            dnd_schedules: schedule_runtime,
             background_runtime,
-            registration_contexts: Mutex::new(RuntimeRegistrationContexts::new()),
-            system_message: Mutex::new(None),
             control_requests: control_requests_tx.clone(),
-            call_signals: Mutex::new(RuntimeCallSignalQueue {
-                next_sequence: 1,
-                sender: call_signals_tx,
-            }),
+            service_requests: service_requests_tx.clone(),
+            call_signals: call_signals_tx,
             recording_trigger_wake,
             pending_recording_triggers: Mutex::new(RuntimeRecordingTriggerQueue::default()),
-            ami_events: AmiEventPublisher::new(AsteriskManager::new()),
-            manager_registrations: Mutex::new(Vec::new()),
-            dialplan_registrations: Mutex::new(Vec::new()),
-            http_registrations: Mutex::new(Vec::new()),
+            ami_events,
         });
-        #[cfg(feature = "telemetry")]
-        let telemetry = crate::asterisk::telemetry::TelemetryReporter::start(
-            runtime.handle(),
-            Arc::downgrade(&shared),
-        );
-        #[cfg(feature = "telemetry")]
-        let server = match telemetry
-            .as_ref()
-            .and_then(crate::asterisk::telemetry::TelemetryReporter::observation_sender)
-        {
-            Some(sender) => server.with_observation_sender(sender),
-            None => server,
-        };
         let directory_registration = register_directory_http(
             RuntimeDirectoryProvider {
                 shared: Arc::downgrade(&shared),
@@ -591,10 +626,7 @@ impl Module {
             AsteriskHttp::new(),
         )
         .map_err(|error| format!("unable to register phone directory HTTP service: {error}"))?;
-        shared
-            .http_registrations
-            .lock_unpoisoned()
-            .push(directory_registration);
+        let http_registrations = vec![directory_registration];
         let manager = AsteriskManager::new();
         let mut manager_registrations = register_inventory_actions(
             RuntimeInventoryProvider {
@@ -643,7 +675,6 @@ impl Module {
             )
             .map_err(|error| format!("unable to register management service controls: {error}"))?,
         );
-        *shared.manager_registrations.lock_unpoisoned() = manager_registrations;
         let dialplan = AsteriskDialplan::new();
         let device_query_registration = register_device_query(
             RuntimeDeviceQueryProvider {
@@ -697,7 +728,7 @@ impl Module {
             dialplan,
         )
         .map_err(|error| format!("unable to register call-indication application: {error}"))?;
-        *shared.dialplan_registrations.lock_unpoisoned() = vec![
+        let dialplan_registrations = vec![
             device_query_registration,
             line_query_registration,
             channel_query_registration,
@@ -706,25 +737,47 @@ impl Module {
             handset_message_registration,
             handset_call_indication_registration,
         ];
+        #[cfg(feature = "telemetry")]
+        let telemetry = crate::asterisk::telemetry::TelemetryReporter::start(
+            runtime.handle(),
+            Arc::downgrade(&shared),
+        );
+        #[cfg(feature = "telemetry")]
+        let server = match telemetry
+            .as_ref()
+            .and_then(crate::asterisk::telemetry::TelemetryReporter::observation_sender)
+        {
+            Some(sender) => server.with_observation_sender(sender),
+            None => server,
+        };
         let handle = runtime.handle().clone();
+        let server_shutdown = phone.clone();
         let server_task = runtime.spawn(async move {
             let secure_ingress = ingress.clone();
-            tokio::select! {
-                result = server.run() => {
+            let mut handshakes = JoinSet::new();
+            let mut running = Box::pin(server.run());
+            let server_finished = tokio::select! {
+                result = &mut running => {
                     if let Err(error) = result {
                         ast_log(LogLevel::Error, &format!("SCCP server stopped: {error}"));
                     }
+                    true
                 }
                 result = run_clear_listener(clear_listener, ingress) => {
-                    if let Err(error) = result {
-                        ast_log(LogLevel::Error, &error);
-                    }
+                    if let Err(error) = result { ast_log(LogLevel::Error, &error); }
+                    false
                 }
-                result = run_secure_listener(secure_listener, tls_acceptor, secure_ingress) => {
-                    if let Err(error) = result {
-                        ast_log(LogLevel::Error, &error);
-                    }
+                result = run_secure_listener(secure_listener, tls_acceptor, secure_ingress, &mut handshakes) => {
+                    if let Err(error) = result { ast_log(LogLevel::Error, &error); }
+                    false
                 }
+            };
+            // TLS handshakes own only streams. Cancellation is complete only
+            // after every task has been joined.
+            handshakes.shutdown().await;
+            if !server_finished {
+                let (_, result) = tokio::join!(server_shutdown.shutdown(), &mut running);
+                if let Err(error) = result { ast_log(LogLevel::Error, &format!("SCCP transport stopped: {error}")); }
             }
         });
         let access = Access {
@@ -732,7 +785,65 @@ impl Module {
             phone,
             shared,
         };
+        let schedule_access = access.clone();
+        let dnd_schedule_task = runtime.spawn_blocking(move || {
+            super::dnd_schedule::DndScheduleOwner::new(
+                schedule_access,
+                dnd_schedules,
+                dnd_schedule_store,
+                schedule_mailbox,
+            )
+            .run();
+        });
         run_dnd_schedule_tick(&access);
+        let worker_task = runtime.spawn(worker_owner.run());
+        let presence_access = access.clone();
+        let presence_task = runtime.spawn_blocking(move || {
+            super::presence_owner::PresenceOwner::new(presence_access, presence_mailbox).run();
+        });
+        let parking_access = access.clone();
+        let parking_task = runtime.spawn_blocking(move || {
+            enum Turn {
+                Batch(
+                    Option<
+                        crate::runtime::mailbox::Admitted<
+                            crate::runtime::parking_events::ParkingEventBatch,
+                        >,
+                    >,
+                ),
+                Update,
+            }
+            loop {
+                let turn = parking_access.handle.block_on(async {
+                    tokio::select! {
+                        biased;
+                        batch = parking_events.recv() => Turn::Batch(batch),
+                        _ = parking_access.shared.parking_events.updated() => Turn::Update,
+                    }
+                });
+                match turn {
+                    Turn::Batch(None) => break,
+                    Turn::Batch(Some(batch)) => {
+                        let (batch, _admission) = batch.into_parts();
+                        parking_access.handle.block_on(async {
+                            super::handle_parking_event(&parking_access, batch.first).await;
+                            if let Some(latest) = batch.latest {
+                                super::handle_parking_event(&parking_access, latest).await;
+                            }
+                        });
+                    }
+                    Turn::Update => {
+                        if let Some((update, _admission)) =
+                            parking_access.shared.parking_events.take_latest()
+                        {
+                            parking_access
+                                .handle
+                                .block_on(super::handle_parking_event(&parking_access, update));
+                        }
+                    }
+                }
+            }
+        });
         let event_access = access.clone();
         let signal_access = access.clone();
         let background_access = access.clone();
@@ -744,26 +855,50 @@ impl Module {
             )
             .run();
         });
-        let event_task = runtime.spawn(async move {
-            tokio::join!(
-                run_events(
-                    event_access,
-                    events,
-                    blf_events,
-                    parking_events,
-                    control_requests,
-                    service_requests,
-                    recording_triggers,
-                ),
-                run_call_signals(signal_access, call_signals),
-            );
+        let resolver_task = runtime.spawn(async move {
+            if let Err(error) = resolver_owner.run().await {
+                ast_log(LogLevel::Error, &error.to_string());
+            }
         });
+        let publication_task = runtime.spawn(publication_owner.run());
+        let (event_shutdown, event_stop) = tokio::sync::oneshot::channel();
+        let (finish_event_shutdown, finish_event_stop) = tokio::sync::oneshot::channel();
+        let (ordinary_drained, event_drained) = tokio::sync::oneshot::channel();
+        let signal_task = runtime.spawn(run_call_signals(signal_access, call_signals));
+        let event_task = runtime.spawn(run_events(
+            event_access,
+            events,
+            priority_events,
+            control_requests,
+            service_requests,
+            recording_triggers,
+            event_stop,
+            finish_event_stop,
+            ordinary_drained,
+        ));
         Ok(Self {
             runtime,
+            controller_task: Some(controller_task.into_thread()),
             access,
             server_task,
             event_task,
+            event_shutdown: Some(event_shutdown),
+            finish_event_shutdown: Some(finish_event_shutdown),
+            event_drained: Some(event_drained),
+            signal_task,
             background_task,
+            presence_task,
+            parking_task,
+            worker_task,
+            dnd_schedule_task,
+            publication_task,
+            bridge_task: bridge_task.into_task(),
+            media_task: Some(media_task.into_thread()),
+            resolver_task,
+            configuration_task: Some(configuration_task.into_thread()),
+            manager_registrations,
+            dialplan_registrations,
+            http_registrations,
             parking_subscription,
             sorcery_registration: None,
             #[cfg(feature = "telemetry")]
@@ -772,69 +907,146 @@ impl Module {
     }
 
     pub fn stop(mut self) {
-        self.access.shared.ami_events.close();
-        self.access
-            .shared
-            .manager_registrations
-            .lock_unpoisoned()
-            .clear();
-        self.access
-            .shared
-            .http_registrations
-            .lock_unpoisoned()
-            .clear();
-        self.access
-            .shared
-            .dialplan_registrations
-            .lock_unpoisoned()
-            .clear();
-        uninstall_blf(&self.access);
-        // Stop accepting handset mutations before the controller snapshot is
-        // drained. The server stays alive long enough to deliver the terminal
-        // handset cleanup commands below.
-        self.event_task.abort();
+        self.access.shared.channel_allocations.suspend();
+        self.access.shared.control_requests.close();
+        self.access.shared.service_requests.close();
+        // Finish the running operation and reject unstarted external work while
+        // native registrations drain. Handset transport remains available.
+        if let Some(shutdown) = self.event_shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        self.manager_registrations.clear();
+        self.http_registrations.clear();
+        self.dialplan_registrations.clear();
         let phone = self.access.phone.clone();
         self.runtime.block_on(async {
-            let _ = tokio::time::timeout(Duration::from_secs(2), &mut self.event_task).await;
+            if let Some(drained) = self.event_drained.take() {
+                let _ = drained.await;
+            }
             if let Err(error) = self.access.shared.background_runtime.shutdown().await {
                 ast_log(
                     LogLevel::Warning,
                     &format!("unable to stop the background runtime cleanly: {error}"),
                 );
             }
-            let _ = tokio::time::timeout(Duration::from_secs(2), &mut self.background_task).await;
+            if let Err(error) = self.background_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("background owner failed during unload: {error}"),
+                );
+            }
             shutdown_conferences(&self.access).await;
-            shutdown_remote_hangups(&self.access).await;
             shutdown_one_way_microphones(&self.access).await;
-            let _ = phone.shutdown().await;
-            self.access
-                .shared
-                .conference_announcements
-                .lock_unpoisoned()
-                .clear();
-            let _ = tokio::time::timeout(Duration::from_secs(2), &mut self.server_task).await;
+            self.access.shared.workers.close();
+            match self.worker_task.await {
+                Ok(0) => {}
+                Ok(failures) => ast_log(
+                    LogLevel::Error,
+                    &format!("{failures} runtime workers failed before unload"),
+                ),
+                Err(error) => ast_log(
+                    LogLevel::Error,
+                    &format!("runtime worker owner failed during unload: {error}"),
+                ),
+            }
+            self.parking_subscription.unsubscribe();
+            self.access.shared.parking_events.close();
+            if let Err(error) = self.parking_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("parking event owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.call_signals.close();
+            if let Err(error) = self.signal_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("call-signal owner failed during unload: {error}"),
+                );
+            }
+            // Signal delivery can finish a remote-hangup presentation after it
+            // releases the native channel. Drain tones only after that delivery.
+            shutdown_remote_hangups(&self.access).await;
+            self.access.shared.dnd_schedules.close();
+            if let Err(error) = self.dnd_schedule_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("DND schedule owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.media_runtime.close();
+            if let Some(task) = self.media_task.take() {
+                if task.join().is_err() {
+                    ast_log(LogLevel::Error, "media owner failed during unload");
+                }
+            }
+            if let Some(finish) = self.finish_event_shutdown.take() {
+                let _ = finish.send(());
+            }
+            // Session retirement owns reserved priority slots. Stop transport
+            // while the event owner can still consume those terminal updates.
+            let (_, events) = tokio::join!(phone.shutdown(), self.event_task);
+            if let Err(error) = events {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("event owner failed during unload: {error}"),
+                );
+            }
+            if let Err(error) = self.server_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("SCCP transport failed during unload: {error}"),
+                );
+            }
+            self.access.shared.bridge_runtime.close();
+            if let Err(error) = self.bridge_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("bridge owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.presence.close();
+            if let Err(error) = self.presence_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("presence owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.external_addresses.close();
+            if let Err(error) = self.resolver_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("resolver owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.ami_events.close();
+            if let Err(error) = self.publication_task.await {
+                ast_log(
+                    LogLevel::Error,
+                    &format!("publication owner failed during unload: {error}"),
+                );
+            }
+            self.access.shared.configuration_transactions.close();
+            if let Some(task) = self.configuration_task.take() {
+                if task.join().is_err() {
+                    ast_log(
+                        LogLevel::Error,
+                        "configuration transaction owner failed during unload",
+                    );
+                }
+            }
+            self.access.shared.controller.close();
+            if let Some(task) = self.controller_task.take() {
+                if task.join().is_err() {
+                    ast_log(LogLevel::Error, "controller owner failed during unload");
+                }
+            }
         });
-        self.server_task.abort();
-        self.event_task.abort();
-        if let Err(error) = self
-            .access
-            .shared
-            .registration_contexts
-            .lock_unpoisoned()
-            .registry
-            .clear()
-        {
-            ast_log(
-                LogLevel::Error,
-                &format!("unable to remove registration-context extensions during unload: {error}"),
-            );
-        }
-        self.parking_subscription.unsubscribe();
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &mut self.telemetry {
             self.runtime.block_on(telemetry.shutdown());
         }
-        self.runtime.shutdown_timeout(Duration::from_secs(1));
+        drop(self.runtime);
     }
 }
 
@@ -867,24 +1079,25 @@ impl Access {
     }
 
     fn enqueue_call_signal_inner(&self, pbx_id: PbxCallId, kind: RuntimeCallSignalKind) -> bool {
-        let mut queue = self.shared.call_signals.lock_unpoisoned();
-        let Some(next_sequence) = queue.next_sequence.checked_add(1) else {
-            ast_log(
-                LogLevel::Error,
-                "SCCP call-signal sequence space is exhausted",
-            );
+        let binding = self.shared.channels.lock_unpoisoned().get(&pbx_id).cloned();
+        let Some(binding) = binding else {
             return false;
         };
-        let signal = RuntimeCallSignal {
-            sequence: queue.next_sequence,
-            pbx_id,
-            kind,
-        };
-        if queue.sender.send(signal).is_err() {
-            return false;
+        match kind {
+            RuntimeCallSignalKind::Hangup { handset_call_id } => {
+                binding
+                    .signals
+                    .retire(RuntimeCallSignalKind::Hangup { handset_call_id });
+                true
+            }
+            kind => binding
+                .signals
+                .try_send(
+                    kind,
+                    Some(Instant::now() + super::MANAGER_CONTROL_DELIVERY_TIMEOUT),
+                )
+                .is_ok(),
         }
-        queue.next_sequence = next_sequence;
-        true
     }
 
     pub fn spawn_phone(&self, command: PhoneCommand) {
@@ -919,8 +1132,9 @@ impl Access {
             };
             return self
                 .shared
-                .mobility
-                .lock_unpoisoned()
+                .controller
+                .snapshot()
+                .mobility()
                 .appearances_for_device(&device)
                 .filter(|appearance| appearance.binding.line.number == line)
                 .map(|appearance| appearance.binding.clone())
@@ -935,8 +1149,9 @@ impl Access {
             .collect::<Vec<_>>();
         bindings.extend(
             self.shared
-                .mobility
-                .lock_unpoisoned()
+                .controller
+                .snapshot()
+                .mobility()
                 .appearances_for_line(&target.line.number)
                 .map(|appearance| appearance.binding.clone()),
         );
@@ -956,31 +1171,21 @@ pub fn runtime_line_binding(
         .or_else(|| config.guest_hotline_binding(device_id, line_instance))
         .or_else(|| {
             shared
-                .mobility
-                .lock_unpoisoned()
+                .controller
+                .snapshot()
+                .mobility()
                 .binding_for_device(device_id, line_instance)
                 .cloned()
         })
 }
 
 pub fn registered_device_ids(shared: &Shared) -> Vec<DeviceId> {
-    controller_step(&shared.controller, |controller| {
-        controller
-            .registered_devices()
-            .map(|(device, _)| device.clone())
-            .collect()
-    })
-}
-
-pub fn reconcile_registration_contexts(
-    shared: &Shared,
-    config: &ModuleConfig,
-    registered_devices: &[DeviceId],
-) -> Result<(), RegistrationRegistryError> {
     shared
-        .registration_contexts
-        .lock_unpoisoned()
-        .reconcile(config, registered_devices)
+        .controller
+        .snapshot()
+        .registered_devices()
+        .map(|(device, _)| device.clone())
+        .collect()
 }
 
 pub fn module_access() -> Option<Access> {
@@ -1054,20 +1259,23 @@ fn publish_config_reconciliation_status(
 }
 
 fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<(), String> {
-    let _reload_guard = access.shared.config_reloads.lock_unpoisoned();
-    let _mobility_guard = access
-        .handle
-        .block_on(access.shared.mobility_mutations.lock());
+    let transaction = access
+        .shared
+        .configuration_transactions
+        .begin(
+            crate::runtime::configuration_transaction::ConfigurationOperation::Reload,
+            Instant::now() + super::MANAGER_CONTROL_TIMEOUT,
+        )
+        .map_err(|error| error.to_string())?;
     let next = access
         .shared
         .config_provider
         .refresh()
         .map_err(|error| error.to_string())?;
-    let next_dnd_schedules =
-        super::DndScheduleRegistry::load(&next, &access.shared.dnd_schedule_store)
-            .map_err(|error| format!("unable to stage reloaded DND schedules: {error}"))?;
-    let next_configured_dnd_schedules = super::DndScheduleRegistry::from_configuration(&next)
-        .map_err(|error| format!("unable to stage configured DND schedules: {error}"))?;
+    let staged_schedules = access
+        .shared
+        .dnd_schedules
+        .stage(Arc::new(next.clone()), &transaction)?;
     let previous = access.config();
     let plan = ReloadPlan::build(&previous, &next);
     selection
@@ -1084,19 +1292,19 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
     }
     if access
         .shared
-        .mobility
-        .lock_unpoisoned()
+        .controller
+        .snapshot()
+        .mobility()
         .has_pending_transaction()
     {
         return Err("a mobility mutation is in progress; retry reload".into());
     }
-    let feature_guard = access.shared.feature_mutations.lock_unpoisoned();
     let feature_states = access
         .shared
         .feature_store
         .load_configuration(&next)
         .map_err(|error| format!("unable to restore reloaded feature state: {error}"))?;
-    let staged_mwi = StagedMwiSubscriptions::new(&plan.mwi_add)?;
+    let staged_mwi = StagedMwiSubscriptions::new(access, &plan.mwi_add)?;
     let registered_before = registered_device_ids(&access.shared);
     let affected: HashSet<_> = plan.affected_devices().cloned().collect();
     let phone_reconfigure_devices = plan
@@ -1109,8 +1317,15 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
         .filter(|device| !affected.contains(*device))
         .cloned()
         .collect::<Vec<_>>();
-    reconcile_registration_contexts(&access.shared, &next, &registered_after)
-        .map_err(|error| format!("unable to apply registration-context extensions: {error}"))?;
+    let staged_contexts = super::StagedRegistrationContexts::new(
+        access,
+        Arc::new(next.clone()),
+        registered_after.clone(),
+        Arc::clone(&previous),
+        registered_before.clone(),
+        &transaction,
+    )
+    .map_err(|error| format!("unable to apply registration-context extensions: {error}"))?;
     let definitions = next.device_definitions();
     let anonymous_hotline = anonymous_hotline_definition(&next)?;
     let applied = match access
@@ -1122,8 +1337,7 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
         )) {
         Ok(applied) => applied,
         Err(error) => {
-            let rollback =
-                reconcile_registration_contexts(&access.shared, &previous, &registered_before);
+            let rollback = staged_contexts.abort();
             return Err(if rollback.is_ok() {
                 format!("unable to apply SCCP definitions: {error}")
             } else {
@@ -1136,56 +1350,40 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
     debug_assert_eq!(applied.added, plan.added);
     debug_assert_eq!(applied.changed, plan.changed);
     debug_assert_eq!(applied.removed, plan.removed);
-    access
-        .shared
-        .registration_contexts
-        .lock_unpoisoned()
-        .suppressed_devices
-        .extend(affected);
-    let (registered, previous_feature_states) =
-        controller_step(&access.shared.controller, |controller| {
-            let previous_feature_states = registered_after
-                .iter()
-                .filter_map(|device| {
-                    controller
-                        .feature_state(device)
+    let controller_commit = access.shared.controller.reload_policy(
+        next.clone(),
+        feature_states.clone(),
+        registered_after.iter().cloned().collect(),
+    );
+    let (registered, previous_feature_states) = match controller_commit {
+        Ok(committed) => committed,
+        Err(error) => {
+            let handset_rollback = access.handle.block_on(
+                access.phone.reconfigure_station_policy(
+                    previous.device_definitions(),
+                    plan.affected_devices()
+                        .chain(&plan.added)
                         .cloned()
-                        .map(|state| (device.clone(), state))
-                })
-                .collect::<BTreeMap<_, _>>();
-            controller
-                .set_interdigit_timeout(Duration::from_millis(next.general.interdigit_timeout_ms));
-            controller.set_first_digit_timeout(Duration::from_millis(
-                next.general.first_digit_timeout_ms,
+                        .collect::<Vec<_>>(),
+                    anonymous_hotline_definition(&previous)?,
+                ),
+            );
+            let native_rollback = staged_contexts.abort();
+            return Err(format!(
+                "controller reload commit failed: {error}; handset rollback: {}; registration rollback: {}",
+                handset_rollback.is_ok(),
+                native_rollback.is_ok()
             ));
-            controller.set_simulated_enbloc(next.general.simulate_enbloc);
-            controller.set_overlap_devices(
-                next.devices
-                    .values()
-                    .filter(|device| device.allow_overlap)
-                    .map(|device| device.id.clone()),
-            );
-            controller.set_line_dial_tones(
-                next.line_features
-                    .iter()
-                    .map(|(line, features)| (line.clone(), features.dial_tones.clone())),
-            );
-            controller.set_line_incoming_limits(
-                next.line_features
-                    .iter()
-                    .map(|(line, features)| (line.clone(), features.incoming_limit)),
-            );
-            controller.replace_feature_states(feature_states.clone());
-            let registered = controller
-                .registered_devices()
-                .filter(|(device, _)| registered_after.contains(device))
-                .map(|(device, _)| device.clone())
-                .collect::<Vec<_>>();
-            (registered, previous_feature_states)
-        });
+        }
+    };
+    let registration_failure = staged_contexts.commit(affected).err();
     access
         .phone
         .set_call_answer_order(next.general.call_answer_order.into());
+    access
+        .shared
+        .external_addresses
+        .configure(next.general.network.external.clone());
     *access.shared.config.write_unpoisoned() = Arc::new(next);
     reconcile_mobility_after_reload(access);
     staged_mwi.commit(access, &plan.mwi_remove);
@@ -1204,7 +1402,6 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
             publish_device_features(access, device, state);
         }
     }
-    drop(feature_guard);
     match access
         .handle
         .block_on(super::background::reconcile_backgrounds_after_reload(
@@ -1235,44 +1432,40 @@ fn reload_selected_inner(access: &Access, selection: ReloadSelection) -> Result<
             publish_feature_changes(access, &device, previous, current);
         }
     }
-    install_reloaded_dnd_schedules(access, next_dnd_schedules, &next_configured_dnd_schedules);
+    install_reloaded_dnd_schedules(access, staged_schedules, &transaction);
     if let Err(error) = access.shared.config_provider.activated(&access.config()) {
         ast_log(
             LogLevel::Warning,
             &format!("SCCP configuration converged but activation persistence failed: {error}"),
         );
     }
-    Ok(())
+    match registration_failure {
+        Some(error) => Err(format!(
+            "configuration applied, but registration-context owner failed during commit: {error}"
+        )),
+        None => Ok(()),
+    }
 }
 
 pub fn reconcile_mobility_after_reload(access: &Access) {
-    access
-        .shared
-        .pending_mobility_prompts
-        .lock_unpoisoned()
-        .clear();
     let config = access.config();
-    let removed = access
+    let reconciliation = access
         .shared
-        .mobility
-        .lock_unpoisoned()
-        .remove_invalid(|appearance| {
-            let slot = &appearance.slot;
-            let line = &appearance.binding.line.number;
-            configured_mobility_button(&config, slot)
-                && config.lines.contains_key(line)
-                && config
-                    .mobility_for_line(line)
-                    .is_some_and(|mobility| mobility.pin.is_some())
-                && !config
-                    .appearances_for_device(&slot.device_id)
-                    .any(|binding| {
-                        binding.line.number == *line
-                            || binding.line_instance == appearance.binding.line_instance
-                    })
-        })
+        .controller
+        .reconcile_mobility((*config).clone())
+        .ok()
+        .and_then(Result::ok)
         .unwrap_or_default();
-    for appearance in removed {
+    for (target, transaction_id) in reconciliation.cancelled_prompts {
+        access
+            .handle
+            .block_on(crate::asterisk::phone::cancel_mobility_response(
+                access,
+                target,
+                transaction_id,
+            ));
+    }
+    for appearance in reconciliation.removed {
         if mobility_device_registered(access, &appearance.slot.device_id)
             && access
                 .handle

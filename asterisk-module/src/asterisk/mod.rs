@@ -54,7 +54,6 @@ use raw::{bridge as native_bridging, channel as native_channel};
 use runtime::Module;
 use static_descriptor::StaticDescriptor;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -81,8 +80,8 @@ use sccp_protocol::{
     TransmitOpenOutcome,
 };
 use tokio::runtime::{Builder, Handle, Runtime};
-use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinHandle;
 
 use crate::ami::controls::{
     CliControlError, ControlOperation, ControlOutcome, ControlProvider, ControlProviderError,
@@ -93,9 +92,9 @@ use crate::ami::controls::{
     execute_cli_message, execute_cli_originate, register_control_actions,
 };
 use crate::ami::events::{
-    AmiEventError, AmiEventPublisher, FeatureChange, MediaDirection as AmiMediaDirection,
-    MediaKind as AmiMediaKind, MediaState as AmiMediaState, RegistrationStatus, alarm_event,
-    call_event, feature_changes, feature_event, media_event, registration_event, xml_alarm_event,
+    AmiEventError, FeatureChange, MediaDirection as AmiMediaDirection, MediaKind as AmiMediaKind,
+    MediaState as AmiMediaState, RegistrationStatus, alarm_event, call_event, feature_changes,
+    feature_event, media_event, registration_event, xml_alarm_event,
 };
 use crate::ami::features::{
     FeatureControlMutation, FeatureControlOutcome, FeatureControlProvider,
@@ -127,21 +126,20 @@ use crate::call::completion::{CallCompletionError, CallCompletionOwnership};
 use crate::call::dnd::{DndMutation, default_button_mode, handset_status_message};
 use crate::call::forwarding::{
     ForwardingCommit, ForwardingContext, ForwardingDestination, ForwardingDigitOutcome,
-    ForwardingEntryRegistry, ForwardingEntryTiming, ForwardingExpiryOutcome, ForwardingOperation,
-    ForwardingRejection, ForwardingRouteReason, ForwardingWriteOutcome, NoAnswerTimerRegistry,
+    ForwardingEntryTiming, ForwardingExpiryOutcome, ForwardingOperation, ForwardingRejection,
+    ForwardingRouteReason, ForwardingWriteOutcome,
 };
 use crate::call::metadata::{
     CallMetadata, ConfiguredChannelMetadata,
     configured_channel_metadata as compose_channel_metadata,
 };
 use crate::call::mobility::{
-    MOBILITY_APPLICATION_ID, MobilityAppearanceWriter, MobilityPreparation, MobilityRegistry,
-    MobilitySlot, PreparedMobilityTransaction, authenticate_line, execute_mobility_io,
-    mobility_login_document, parse_mobility_login_submission, rollback_mobility_io,
+    MOBILITY_APPLICATION_ID, MobilityAppearanceWriter, MobilityPreparation, MobilitySlot,
+    PreparedMobilityTransaction, authenticate_line, execute_mobility_io, mobility_login_document,
+    parse_mobility_login_submission, rollback_mobility_io,
 };
 use crate::call::parking::{
-    ParkedCall, ParkingEvent, ParkingEventKind, ParkingRegistry, ParkingSubscription,
-    handset_call_id_from_channel,
+    ParkedCall, ParkingEvent, ParkingSubscription, handset_call_id_from_channel,
 };
 use crate::call::shared_lines::{
     NoAnswerPolicy, SharedNoAnswerRoute, plan_inbound_bindings, plan_shared_no_answer_route,
@@ -175,8 +173,7 @@ use crate::media::codec_preference::{
     register_codec_preference_application,
 };
 use crate::media::direct::{
-    CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, DirectMediaPolicy, DirectMediaRoute,
-    MediaAnchorReason, MediaAnchorRegistry, MediaAnchorRestores,
+    CONFERENCE_ANNOUNCEMENT_PLAYBACK_WINDOW, DirectMediaPolicy, DirectMediaRoute, MediaAnchorReason,
 };
 use crate::media::formats::{
     PbxAudioFormat, PbxVideoFormat, negotiate_audio, pbx_audio_format, pbx_audio_formats_from_mask,
@@ -218,10 +215,6 @@ use crate::pbx::query::line::{
     AppearanceRingSummary, LineAppearanceSnapshot, LineCallSummary, LineQueryLookupError,
     LineQueryProvider, LineQuerySnapshot, LineQueryTarget, register_line_query,
 };
-use crate::pbx::registration::{
-    RegistrationContextRegistry, RegistrationRegistryError, configured_registration_appearances,
-};
-use crate::presence::blf::{BlfEvent, BlfSubscriptions};
 use crate::runtime::backend::{
     BargeOperation, BridgeBackend, BridgeOperation, CallServiceBackend, ChannelBackend,
     ConferenceAnnouncement, ConferenceAnnouncementOperation, ConferenceDestinationOperation,
@@ -232,9 +225,7 @@ use crate::runtime::backend::{
 };
 use crate::runtime::conference_announcement::{
     AnnouncementAdapter, AnnouncementCall, AnnouncementFailureStage, AnnouncementGeneration,
-    MAX_RESTORE_ATTEMPTS, allocate_generation as allocate_announcement_generation,
-    generation_is_current as announcement_generation_is_current, replacement_anchor_plan,
-    restore_attempts_exhausted, start_announcement,
+    MAX_RESTORE_ATTEMPTS, replacement_anchor_plan, restore_attempts_exhausted, start_announcement,
 };
 use crate::runtime::conference_tasks::{
     ConferenceTaskCancellation, ConferenceTaskRegistry, ConferenceTaskStartError,
@@ -247,7 +238,7 @@ use crate::runtime::controller::{
     DeviceFeatureState, DndMode, HookFlashAction, HotlineCallRequest, InboundCallDisposition,
     InboundUnavailableReason, MediaStreamState, OutboundMediaMode, ParkingRejection,
     PickupRejection, RemoteHangupPlan, TransferCompletionPlan, TransferConsultationRequest,
-    VoicemailNativeOutcome, VoicemailPlan, controller_step,
+    VoicemailNativeOutcome, VoicemailPlan,
 };
 use crate::state::features::{
     FeatureStore, FeatureStoreError, configured_feature_state, registration_state_or_fallback,
@@ -256,10 +247,7 @@ use adapters::bridging::native_pickup_result;
 use adapters::{
     AsteriskCallFeatures, AsteriskChannelMetadata, AsteriskHints, AsteriskPartyUpdates,
 };
-use adapters::{
-    AsteriskDatabase, AsteriskParking, AsteriskRealtime, AsteriskRegistrationExtensions,
-    AsteriskSorcerySource,
-};
+use adapters::{AsteriskDatabase, AsteriskParking, AsteriskRealtime, AsteriskSorcerySource};
 
 const NORMAL_CLEARING: c_int = 16;
 const REQUESTED_CHANNEL_UNAVAILABLE: c_int = 44;

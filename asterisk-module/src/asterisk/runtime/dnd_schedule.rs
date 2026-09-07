@@ -2,17 +2,24 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
 use super::{
-    Access, DeviceId, DndMode, Instant, LogLevel, ModuleConfig, MutexExt as _, RuntimeDndMutation,
-    RuntimeDndMutationError, ast_log, controller_step, execute_dnd_mutation_serialized,
+    Access, DeviceId, DndMode, Instant, LogLevel, ModuleConfig, RuntimeDndMutation,
+    RuntimeDndMutationError, ast_log, execute_dnd_mutation_serialized,
 };
+use crate::asterisk::MANAGER_CONTROL_TIMEOUT;
+use crate::asterisk::adapters::AsteriskDatabase;
 use crate::asterisk::raw::{AsteriskTiming, AsteriskTimingError};
 use crate::config::{
     DndSchedule, DndScheduleMode, DndScheduleSegment, DndScheduleValidationError,
     MAX_DND_SCHEDULE_BYTES, MAX_DND_SCHEDULES, validate_dnd_schedules,
+};
+use crate::runtime::configuration_transaction::{ConfigurationLease, ConfigurationOperation};
+use crate::runtime::mailbox::{
+    MailboxReceiver, MailboxReservation, MailboxSender, RUNTIME_MAILBOX_CAPACITY, mailbox,
 };
 use crate::state::dnd_schedule::{DndScheduleStore, DndScheduleStoreError};
 use crate::state::persistence::PersistentStore;
@@ -214,6 +221,254 @@ impl DndScheduleRegistry {
     }
 }
 
+struct TickAdmission(Arc<AtomicBool>);
+
+impl Drop for TickAdmission {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+enum ScheduleCommand {
+    Tick {
+        lease: ConfigurationLease,
+        pending: TickAdmission,
+    },
+    Stage {
+        config: Arc<ModuleConfig>,
+        lease: ConfigurationLease,
+        reply:
+            std::sync::mpsc::SyncSender<Result<(DndScheduleRegistry, DndScheduleRegistry), String>>,
+    },
+    Install {
+        candidate: DndScheduleRegistry,
+        configured: DndScheduleRegistry,
+        lease: ConfigurationLease,
+        reply: std::sync::mpsc::SyncSender<()>,
+    },
+    Show {
+        device: DeviceId,
+        reply: std::sync::mpsc::SyncSender<String>,
+    },
+    Mutate {
+        device: DeviceId,
+        mutation: ScheduleMutation,
+        lease: ConfigurationLease,
+        reply: std::sync::mpsc::SyncSender<String>,
+    },
+}
+
+pub(super) struct PreparedDndSchedules {
+    candidate: DndScheduleRegistry,
+    configured: DndScheduleRegistry,
+    completion: MailboxReservation<ScheduleCommand>,
+}
+
+pub(super) struct DndScheduleHandle {
+    commands: MailboxSender<ScheduleCommand>,
+    tick_pending: Arc<AtomicBool>,
+}
+
+pub(super) struct DndScheduleMailbox {
+    commands: MailboxReceiver<ScheduleCommand>,
+}
+
+pub(super) fn schedule_channel() -> (DndScheduleHandle, DndScheduleMailbox) {
+    let (commands, receiver) = mailbox(RUNTIME_MAILBOX_CAPACITY);
+    (
+        DndScheduleHandle {
+            commands,
+            tick_pending: Arc::new(AtomicBool::new(false)),
+        },
+        DndScheduleMailbox { commands: receiver },
+    )
+}
+
+impl DndScheduleHandle {
+    pub(super) fn snapshot(&self) -> crate::runtime::mailbox::QueueSnapshot {
+        self.commands.snapshot()
+    }
+
+    pub(super) fn close(&self) {
+        self.commands.close();
+    }
+
+    pub(super) fn stage(
+        &self,
+        config: Arc<ModuleConfig>,
+        lease: &ConfigurationLease,
+    ) -> Result<PreparedDndSchedules, String> {
+        let completion = self
+            .commands
+            .try_reserve()
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.commands
+            .try_send(
+                ScheduleCommand::Stage {
+                    config,
+                    lease: lease.clone(),
+                    reply,
+                },
+                Some(deadline),
+            )
+            .map_err(|error| error.to_string())?;
+        let (candidate, configured) = result
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| "DND schedule staging unavailable".to_owned())??;
+        Ok(PreparedDndSchedules {
+            candidate,
+            configured,
+            completion,
+        })
+    }
+
+    fn install(&self, staged: PreparedDndSchedules, lease: &ConfigurationLease) {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        let _ = staged.completion.send(
+            ScheduleCommand::Install {
+                candidate: staged.candidate,
+                configured: staged.configured,
+                lease: lease.clone(),
+                reply,
+            },
+            None,
+        );
+        if result.recv().is_err() {
+            ast_log(
+                LogLevel::Error,
+                "DND schedule owner stopped before installation completed",
+            );
+        }
+    }
+
+    fn show(&self, device: &DeviceId) -> String {
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        if let Err(error) = self.commands.try_send(
+            ScheduleCommand::Show {
+                device: device.clone(),
+                reply,
+            },
+            Some(deadline),
+        ) {
+            return format!("DND schedule command failed: {error}\n");
+        }
+        result
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|_| "DND schedule command result unavailable\n".to_owned())
+    }
+
+    fn mutate(&self, access: &Access, device: &DeviceId, mutation: ScheduleMutation) -> String {
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
+        let Ok(lease) = access
+            .shared
+            .configuration_transactions
+            .begin(ConfigurationOperation::Schedules, deadline)
+        else {
+            return "DND schedule transaction unavailable\n".to_owned();
+        };
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        if let Err(error) = self.commands.try_send(
+            ScheduleCommand::Mutate {
+                device: device.clone(),
+                mutation,
+                lease,
+                reply,
+            },
+            Some(deadline),
+        ) {
+            return format!("DND schedule command failed: {error}\n");
+        }
+        result
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|_| "DND schedule command result unavailable\n".to_owned())
+    }
+}
+
+pub(super) struct DndScheduleOwner {
+    access: Access,
+    schedules: DndScheduleRegistry,
+    store: DndScheduleStore<AsteriskDatabase>,
+    mailbox: DndScheduleMailbox,
+}
+
+impl DndScheduleOwner {
+    pub(super) fn new(
+        access: Access,
+        schedules: DndScheduleRegistry,
+        store: DndScheduleStore<AsteriskDatabase>,
+        mailbox: DndScheduleMailbox,
+    ) -> Self {
+        Self {
+            access,
+            schedules,
+            store,
+            mailbox,
+        }
+    }
+
+    pub(super) fn run(mut self) {
+        while let Some(command) = self.access.handle.block_on(self.mailbox.commands.recv()) {
+            if command.is_expired(Instant::now()) {
+                command.record_expiration();
+                continue;
+            }
+            let (command, _permit) = command.into_parts();
+            match command {
+                ScheduleCommand::Tick { lease, pending } => {
+                    run_dnd_schedule_tick_serialized(&self.access, &mut self.schedules, &lease);
+                    drop(pending);
+                }
+                ScheduleCommand::Stage {
+                    config,
+                    lease,
+                    reply,
+                } => {
+                    let _lease = lease;
+                    let candidate = DndScheduleRegistry::load(&config, &self.store)
+                        .map_err(|error| error.to_string());
+                    let configured = DndScheduleRegistry::from_configuration(&config)
+                        .map_err(|error| error.to_string());
+                    let _ = reply.send(candidate.and_then(|candidate| {
+                        configured.map(|configured| (candidate, configured))
+                    }));
+                }
+                ScheduleCommand::Install {
+                    mut candidate,
+                    configured,
+                    lease,
+                    reply,
+                } => {
+                    candidate.reconcile_live_ownership(&configured, &self.schedules);
+                    self.schedules = candidate;
+                    run_dnd_schedule_tick_serialized(&self.access, &mut self.schedules, &lease);
+                    let _ = reply.send(());
+                }
+                ScheduleCommand::Show { device, reply } => {
+                    let _ = reply.send(show_schedule(&self.access, &self.schedules, &device));
+                }
+                ScheduleCommand::Mutate {
+                    device,
+                    mutation,
+                    lease,
+                    reply,
+                } => {
+                    let _ = reply.send(mutate_schedule(
+                        &self.access,
+                        &mut self.schedules,
+                        &self.store,
+                        &device,
+                        mutation,
+                        &lease,
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub(super) enum DeviceDndScheduleError {
     #[error(transparent)]
@@ -240,108 +495,92 @@ pub(super) enum DndScheduleRegistryError {
     },
 }
 
-struct DndScheduleEvaluation {
-    device: DeviceId,
-    compiled: Vec<CompiledDndRule>,
-    last_phase: Option<DndSchedulePhase>,
-    pending_catchup: bool,
-    has_rules: bool,
-}
-
-impl DndScheduleEvaluation {
-    fn phase(&self) -> DndSchedulePhase {
-        phase(&self.compiled)
-    }
-}
-
 pub(super) fn install_reloaded_dnd_schedules(
     access: &Access,
-    mut candidate: DndScheduleRegistry,
-    configured: &DndScheduleRegistry,
+    staged: PreparedDndSchedules,
+    lease: &ConfigurationLease,
 ) {
-    let _guard = access.shared.dnd_schedule_mutations.lock_unpoisoned();
-    {
-        let mut current = access.shared.dnd_schedules.lock_unpoisoned();
-        candidate.reconcile_live_ownership(configured, &current);
-        *current = candidate;
-    }
-    run_dnd_schedule_tick_serialized(access);
+    access.shared.dnd_schedules.install(staged, lease);
 }
 
 pub(super) fn run_dnd_schedule_tick(access: &Access) {
-    let _guard = access.shared.dnd_schedule_mutations.lock_unpoisoned();
-    run_dnd_schedule_tick_serialized(access);
+    if access
+        .shared
+        .dnd_schedules
+        .tick_pending
+        .swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let pending = TickAdmission(Arc::clone(&access.shared.dnd_schedules.tick_pending));
+    let Ok(worker) = access.shared.workers.try_reserve() else {
+        return;
+    };
+    let access = access.clone();
+    worker.spawn(async move {
+        let deadline = Instant::now() + MANAGER_CONTROL_TIMEOUT;
+        let Ok(lease) = access
+            .shared
+            .configuration_transactions
+            .begin_async(ConfigurationOperation::Schedules, deadline)
+            .await
+        else {
+            return;
+        };
+        let _ = access
+            .shared
+            .dnd_schedules
+            .commands
+            .send(ScheduleCommand::Tick { lease, pending }, Some(deadline))
+            .await;
+    });
 }
 
-fn run_dnd_schedule_tick_serialized(access: &Access) {
-    let evaluations = {
-        let schedules = access.shared.dnd_schedules.lock_unpoisoned();
-        schedules
-            .devices
-            .iter()
-            .filter_map(|(device, schedule)| {
-                if schedule.rules.is_empty() && !schedule.pending_catchup {
-                    return None;
-                }
-                Some(DndScheduleEvaluation {
-                    device: device.clone(),
-                    compiled: schedule.compiled.clone(),
-                    last_phase: schedule.last_phase,
-                    pending_catchup: schedule.pending_catchup,
-                    has_rules: !schedule.rules.is_empty(),
-                })
-            })
-            .collect::<Vec<_>>()
-    };
-    let due = evaluations
-        .into_iter()
-        .filter_map(|evaluation| {
-            let phase = evaluation.phase();
-            (evaluation.pending_catchup || evaluation.last_phase != Some(phase)).then_some((
-                evaluation.device,
+fn run_dnd_schedule_tick_serialized(
+    access: &Access,
+    schedules: &mut DndScheduleRegistry,
+    lease: &ConfigurationLease,
+) {
+    let due = schedules
+        .devices
+        .iter()
+        .filter_map(|(device, schedule)| {
+            if schedule.rules.is_empty() && !schedule.pending_catchup {
+                return None;
+            }
+            let phase = schedule.phase();
+            (schedule.pending_catchup || schedule.last_phase != Some(phase)).then_some((
+                device.clone(),
                 phase,
-                evaluation.has_rules,
+                !schedule.rules.is_empty(),
             ))
         })
         .collect::<Vec<_>>();
-
     for (device, phase, has_rules) in due {
         match execute_dnd_mutation_serialized(
             access,
             &device,
             RuntimeDndMutation::Scheduled(phase.runtime_mode()),
+            lease,
         ) {
             Ok(_) => {
-                if let Some(schedule) = access
-                    .shared
-                    .dnd_schedules
-                    .lock_unpoisoned()
-                    .devices
-                    .get_mut(&device)
-                {
+                if let Some(schedule) = schedules.devices.get_mut(&device) {
                     schedule.last_phase = has_rules.then_some(phase);
                     schedule.pending_catchup = false;
                     schedule.last_failure_warning = None;
                 }
             }
             Err(error) => {
-                let should_warn = access
-                    .shared
-                    .dnd_schedules
-                    .lock_unpoisoned()
-                    .devices
-                    .get_mut(&device)
-                    .is_some_and(|schedule| {
-                        let now = Instant::now();
-                        let due = schedule.last_failure_warning.is_none_or(|previous| {
-                            now.duration_since(previous).as_secs()
-                                >= FAILURE_WARNING_INTERVAL_SECONDS
-                        });
-                        if due {
-                            schedule.last_failure_warning = Some(now);
-                        }
-                        due
+                let should_warn = schedules.devices.get_mut(&device).is_some_and(|schedule| {
+                    let now = Instant::now();
+                    let due = schedule.last_failure_warning.is_none_or(|previous| {
+                        now.duration_since(previous).as_secs() >= FAILURE_WARNING_INTERVAL_SECONDS
                     });
+                    if due {
+                        schedule.last_failure_warning = Some(now);
+                    }
+                    due
+                });
                 if should_warn {
                     ast_log(
                         LogLevel::Warning,
@@ -394,18 +633,25 @@ pub fn execute_dnd_schedule_cli(access: &Access, arguments: &[String]) -> String
         return format!("DND schedule command failed: device {device} is not configured\n");
     }
     match arguments {
-        [_, operation] if operation.eq_ignore_ascii_case("show") => show_schedule(access, &device),
-        [_, operation] if operation.eq_ignore_ascii_case("clear") => {
-            mutate_schedule(access, &device, ScheduleMutation::Clear)
+        [_, operation] if operation.eq_ignore_ascii_case("show") => {
+            access.shared.dnd_schedules.show(&device)
         }
-        [_, operation] if operation.eq_ignore_ascii_case("reset") => {
-            mutate_schedule(access, &device, ScheduleMutation::Reset)
-        }
+        [_, operation] if operation.eq_ignore_ascii_case("clear") => access
+            .shared
+            .dnd_schedules
+            .mutate(access, &device, ScheduleMutation::Clear),
+        [_, operation] if operation.eq_ignore_ascii_case("reset") => access
+            .shared
+            .dnd_schedules
+            .mutate(access, &device, ScheduleMutation::Reset),
         [_, operation, index] if operation.eq_ignore_ascii_case("remove") => {
             let Ok(index) = index.parse::<usize>() else {
                 return "DND schedule remove requires a one-based rule index\n".into();
             };
-            mutate_schedule(access, &device, ScheduleMutation::Remove(index))
+            access
+                .shared
+                .dnd_schedules
+                .mutate(access, &device, ScheduleMutation::Remove(index))
         }
         [_, operation, time, days, mode] if operation.eq_ignore_ascii_case("add") => {
             let Some(bytes) = time
@@ -423,7 +669,12 @@ pub fn execute_dnd_schedule_cli(access: &Access, arguments: &[String]) -> String
             }
             let raw = format!("{time}, {days}, {mode}");
             match DndSchedule::parse(&raw) {
-                Ok(rule) => mutate_schedule(access, &device, ScheduleMutation::Add(rule)),
+                Ok(rule) => {
+                    access
+                        .shared
+                        .dnd_schedules
+                        .mutate(access, &device, ScheduleMutation::Add(rule))
+                }
                 Err(error) => format!("DND schedule command failed: {error}\n"),
             }
         }
@@ -438,8 +689,14 @@ enum ScheduleMutation {
     Reset,
 }
 
-fn mutate_schedule(access: &Access, device: &DeviceId, mutation: ScheduleMutation) -> String {
-    let _guard = access.shared.dnd_schedule_mutations.lock_unpoisoned();
+fn mutate_schedule(
+    access: &Access,
+    schedules: &mut DndScheduleRegistry,
+    store: &DndScheduleStore<AsteriskDatabase>,
+    device: &DeviceId,
+    mutation: ScheduleMutation,
+    lease: &ConfigurationLease,
+) -> String {
     let config = access.config();
     let Some(configured) = config
         .devices
@@ -449,7 +706,6 @@ fn mutate_schedule(access: &Access, device: &DeviceId, mutation: ScheduleMutatio
         return format!("DND schedule command failed: device {device} is not configured\n");
     };
     let mut rules = {
-        let schedules = access.shared.dnd_schedules.lock_unpoisoned();
         let Some(current) = schedules.devices.get(device) else {
             return "DND schedule command failed: schedule state is unavailable\n".into();
         };
@@ -489,39 +745,28 @@ fn mutate_schedule(access: &Access, device: &DeviceId, mutation: ScheduleMutatio
     };
     let phase = next.phase();
     let count = next.rules.len();
-    let snapshot = match access.shared.dnd_schedule_store.snapshot_raw(device) {
+    let snapshot = match store.snapshot_raw(device) {
         Ok(snapshot) => snapshot,
         Err(error) => return format!("DND schedule command failed: {error}\n"),
     };
     let persist = if reset {
-        access.shared.dnd_schedule_store.reset(device)
+        store.reset(device)
     } else {
-        access
-            .shared
-            .dnd_schedule_store
-            .put_override(device, &next.rules)
+        store.put_override(device, &next.rules)
     };
     if let Err(error) = persist {
         return format!("DND schedule command failed: {error}\n");
     }
 
-    let previous = access
-        .shared
-        .dnd_schedules
-        .lock_unpoisoned()
-        .devices
-        .insert(device.clone(), next);
+    let previous = schedules.devices.insert(device.clone(), next);
     let transition = execute_dnd_mutation_serialized(
         access,
         device,
         RuntimeDndMutation::Scheduled(phase.runtime_mode()),
+        lease,
     );
     if let Err(error) = transition {
-        let persistence_rollback = access
-            .shared
-            .dnd_schedule_store
-            .restore_raw(device, snapshot.as_deref());
-        let mut schedules = access.shared.dnd_schedules.lock_unpoisoned();
+        let persistence_rollback = store.restore_raw(device, snapshot.as_deref());
         match previous {
             Some(previous) => {
                 schedules.devices.insert(device.clone(), previous);
@@ -541,13 +786,7 @@ fn mutate_schedule(access: &Access, device: &DeviceId, mutation: ScheduleMutatio
             ),
         };
     }
-    if let Some(installed) = access
-        .shared
-        .dnd_schedules
-        .lock_unpoisoned()
-        .devices
-        .get_mut(device)
-    {
+    if let Some(installed) = schedules.devices.get_mut(device) {
         installed.last_phase = (!installed.rules.is_empty()).then_some(phase);
         installed.pending_catchup = false;
     }
@@ -562,18 +801,18 @@ fn mutate_schedule(access: &Access, device: &DeviceId, mutation: ScheduleMutatio
     )
 }
 
-fn show_schedule(access: &Access, device: &DeviceId) -> String {
-    let schedule = {
-        let schedules = access.shared.dnd_schedules.lock_unpoisoned();
-        schedules.devices.get(device).cloned()
-    };
+fn show_schedule(access: &Access, schedules: &DndScheduleRegistry, device: &DeviceId) -> String {
+    let schedule = { schedules.devices.get(device).cloned() };
     let Some(schedule) = schedule else {
         return "DND schedule command failed: schedule state is unavailable\n".into();
     };
     let phase = schedule.phase();
-    let actual = controller_step(&access.shared.controller, |controller| {
-        controller.feature_state(device).map(|state| state.dnd)
-    });
+    let actual = access
+        .shared
+        .controller
+        .snapshot()
+        .feature_state(device)
+        .map(|state| state.dnd);
     let mut output = format!(
         "Device: {device}\nSource: {}\nScheduled phase: {}\nActual DND: {}\nRules:\n",
         schedule.source.name(),

@@ -143,7 +143,7 @@ pub struct VoicemailOperation {
     pub target: VoicemailTarget,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VoicemailRegistry {
     next_id: u64,
     by_device: HashMap<DeviceId, VoicemailTransaction>,

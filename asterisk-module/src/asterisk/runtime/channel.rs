@@ -4,11 +4,11 @@ use super::{
     ChannelAllocationRequest, ChannelBinding, ChannelOperationPermit, ChannelState, Codec,
     ConferenceTaskCancellation, ConfiguredChannelMetadata, DeviceId, HandsetEffect, LineBinding,
     LogLevel, MediaEndpointAddress, ModuleConfig, MutexExt as _, NatMode, NonNull, PbxAudioFormat,
-    PbxCallId, PbxVideoFormat, PendingRetrieval, REQUESTED_CHANNEL_UNAVAILABLE, ReceiveTransmit,
+    PbxCallId, PbxVideoFormat, REQUESTED_CHANNEL_UNAVAILABLE, ReceiveTransmit,
     StationMediaCapabilities, StationTransport, VideoMode, ast_log, c_string,
-    clear_no_answer_route, compose_channel_metadata, controller_step, format_for,
-    local_video_endpoint, native_audio_format, native_channel, negotiate_audio, pbx_audio_format,
-    pbx_audio_format_from_native, raw, station_nat_active, sys,
+    compose_channel_metadata, format_for, local_video_endpoint, native_audio_format,
+    native_channel, negotiate_audio, pbx_audio_format, pbx_audio_format_from_native, raw,
+    station_nat_active, sys,
 };
 use crate::asterisk::raw::handles::ChannelRef;
 use crate::media::formats::{OwnedNegotiatedVideo, negotiate_video_owned};
@@ -22,18 +22,6 @@ use sccp_protocol::{
 
 pub fn handset_effect_call_id(effect: &HandsetEffect) -> Option<CallId> {
     Some(effect.subject_call_id())
-}
-
-pub fn take_pending_retrieval_by_pbx(
-    access: &Access,
-    pbx_id: PbxCallId,
-) -> Option<PendingRetrieval> {
-    let mut pending = access.shared.pending_retrievals.lock_unpoisoned();
-    let call_id = pending
-        .iter()
-        .find(|(_, attempt)| attempt.pbx_id == pbx_id)
-        .map(|(call_id, _)| *call_id)?;
-    pending.remove(&call_id)
 }
 
 pub fn preferred_codec(
@@ -84,12 +72,13 @@ fn codec_policy(
     line_instance: u32,
 ) -> Option<(Vec<Codec>, Option<StationMediaCapabilities>)> {
     let config = access.config();
-    let capabilities = controller_step(&access.shared.controller, |controller| {
-        controller
-            .registered_device(device)
-            .map(|state| state.capabilities.clone())
-    })
-    .flatten();
+    let capabilities = access
+        .shared
+        .controller
+        .snapshot()
+        .registered_device(device)
+        .map(|state| state.capabilities.clone())
+        .flatten();
     let mut codecs = config
         .media_for_binding(&access.line_binding(device, line_instance)?)
         .map(|media| media.codecs)
@@ -154,15 +143,17 @@ fn preferred_video(
     if media.video_mode == VideoMode::Off {
         return VideoSelection::Disabled;
     }
-    let Some((session_generation, protocol, capabilities)) =
-        controller_step(&access.shared.controller, |controller| {
-            controller.registered_device(device).map(|state| {
-                (
-                    state.session_generation,
-                    state.registration.protocol,
-                    state.capabilities.clone(),
-                )
-            })
+    let Some((session_generation, protocol, capabilities)) = access
+        .shared
+        .controller
+        .snapshot()
+        .registered_device(device)
+        .map(|state| {
+            (
+                state.session_generation,
+                state.registration.protocol,
+                state.capabilities.clone(),
+            )
         })
     else {
         return VideoSelection::Disabled;
@@ -338,9 +329,10 @@ pub fn prepare_channel_allocation_text(
     let config = access.config();
     let assigned_uniqueid = access
         .shared
-        .assigned_channel_ids
-        .lock_unpoisoned()
-        .get(&pbx_id)
+        .controller
+        .snapshot()
+        .call_runtime_record(pbx_id)
+        .and_then(|record| record.assigned_channel_id.as_ref())
         .map(|uniqueid| allocation_text("assigned unique ID", uniqueid))
         .transpose()?;
     Ok(ChannelAllocationText {
@@ -360,6 +352,14 @@ pub fn allocate_channel(
     access: &Access,
     request: ChannelAllocationRequest<'_>,
 ) -> Result<(), ChannelAllocationError> {
+    // Native allocation and publication in the binding map are one lifetime
+    // operation. Holding this permit makes unload fail; after unload closes
+    // admission, later queued effects fail without starting native I/O.
+    let _allocation = access
+        .shared
+        .channel_allocations
+        .try_enter()
+        .ok_or(ChannelAllocationError::Failed)?;
     let ChannelAllocationRequest {
         sccp_id,
         pbx_id,
@@ -372,6 +372,16 @@ pub fn allocate_channel(
         text,
         owner,
     } = request;
+    let signals = access
+        .shared
+        .call_signals
+        .admit(
+            pbx_id,
+            super::RuntimeCallSignalKind::Hangup {
+                handset_call_id: sccp_id,
+            },
+        )
+        .map_err(|_| ChannelAllocationError::Failed)?;
     let Some(format) = format_for(codec) else {
         return Err(ChannelAllocationError::Failed);
     };
@@ -411,11 +421,12 @@ pub fn allocate_channel(
         station_nat_active(access, &config, &binding.device_id).unwrap_or_else(|| {
             network.is_some_and(|network| matches!(network.nat, NatMode::On | NatMode::AutoOn))
         });
-    let signaling_secure = controller_step(&access.shared.controller, |controller| {
-        controller
-            .registered_device(&binding.device_id)
-            .is_some_and(|device| device.registration.transport == StationTransport::Secure)
-    });
+    let signaling_secure = access
+        .shared
+        .controller
+        .snapshot()
+        .registered_device(&binding.device_id)
+        .is_some_and(|device| device.registration.transport == StationTransport::Secure);
     let allocation = unsafe {
         native_channel::allocate_channel(native_channel::ChannelAllocation {
             line: &line,
@@ -532,9 +543,12 @@ pub fn allocate_channel(
         unsafe { queue_unavailable(channel) };
         return Err(ChannelAllocationError::Failed);
     }
-    let private_call = controller_step(&access.shared.controller, |controller| {
-        controller.call_privacy(sccp_id).unwrap_or(false)
-    });
+    let private_call = access
+        .shared
+        .controller
+        .snapshot()
+        .call_privacy(sccp_id)
+        .unwrap_or(false);
     if configure_pickup_policy(access, binding, channel, private_call).is_err() {
         unsafe { queue_unavailable(channel) };
         return Err(ChannelAllocationError::Failed);
@@ -557,21 +571,23 @@ pub fn allocate_channel(
         .shared
         .channels
         .lock_unpoisoned()
-        .insert(pbx_id, ChannelBinding::new(retained));
+        .insert(pbx_id, ChannelBinding::new(retained, signals));
     let (installed, keep_video) = match selected_video {
         VideoSelection::Disabled => (true, false),
         VideoSelection::AudioOnly {
             session_generation,
             reason,
         } => (
-            controller_step(&access.shared.controller, |controller| {
-                controller.set_video_audio_only_for_device(
+            access
+                .shared
+                .controller
+                .set_video_audio_only_for_device(
                     &binding.device_id,
                     session_generation,
                     sccp_id,
                     reason,
                 )
-            }),
+                .unwrap_or_else(|_| false),
             false,
         ),
         VideoSelection::Ready(selected) => {
@@ -598,39 +614,44 @@ pub fn allocate_channel(
                                 payload,
                                 local_endpoint,
                             };
-                            let installed =
-                                controller_step(&access.shared.controller, |controller| {
-                                    controller.install_video_plan_for_device(
-                                        &binding.device_id,
-                                        sccp_id,
-                                        plan,
-                                        VideoPlanReadiness::Ready,
-                                    )
-                                });
+                            let installed = access
+                                .shared
+                                .controller
+                                .install_video_plan_for_device(
+                                    &binding.device_id,
+                                    sccp_id,
+                                    plan,
+                                    VideoPlanReadiness::Ready,
+                                )
+                                .unwrap_or_else(|_| false);
                             (installed, installed)
                         }
                         None => (
-                            controller_step(&access.shared.controller, |controller| {
-                                controller.set_video_audio_only_for_device(
+                            access
+                                .shared
+                                .controller
+                                .set_video_audio_only_for_device(
                                     &binding.device_id,
                                     selected.session_generation,
                                     sccp_id,
                                     VideoFallbackReason::LocalEndpointUnavailable,
                                 )
-                            }),
+                                .unwrap_or_else(|_| false),
                             false,
                         ),
                     }
                 }
                 Err(reason) => (
-                    controller_step(&access.shared.controller, |controller| {
-                        controller.set_video_audio_only_for_device(
+                    access
+                        .shared
+                        .controller
+                        .set_video_audio_only_for_device(
                             &binding.device_id,
                             selected.session_generation,
                             sccp_id,
                             reason,
                         )
-                    }),
+                        .unwrap_or_else(|_| false),
                     false,
                 ),
             }
@@ -674,10 +695,11 @@ pub fn configured_channel_metadata(
     binding: &LineBinding,
     pbx_id: PbxCallId,
 ) -> Option<CallMetadata> {
-    let (direction, digits, metadata) = controller_step(&access.shared.controller, |controller| {
-        let call = controller.pbx_call(pbx_id)?;
-        Some((call.direction, call.digits.clone(), call.metadata.clone()))
-    })?;
+    let (direction, digits, metadata) =
+        (|controller: &crate::runtime::controller::ControllerSnapshot| {
+            let call = controller.pbx_call(pbx_id)?;
+            Some((call.direction, call.digits.clone(), call.metadata.clone()))
+        })(access.shared.controller.snapshot().as_ref())?;
     let device_variables = config
         .devices
         .get(&binding.device_id)
@@ -697,9 +719,11 @@ pub fn configured_channel_metadata(
     )
     .ok()?;
     if !matches!(
-        controller_step(&access.shared.controller, |controller| {
-            controller.set_call_metadata(pbx_id, metadata.clone())
-        }),
+        access
+            .shared
+            .controller
+            .set_call_metadata(pbx_id, metadata.clone())
+            .unwrap_or_else(|_| Ok(false)),
         Ok(true)
     ) {
         return None;
@@ -823,6 +847,7 @@ mod allocation_text_tests {
 }
 
 pub fn remove_channel(access: &Access, pbx_id: PbxCallId) {
+    super::backend::reap_conference_tasks(&access.shared);
     let destination = access
         .shared
         .conference_destination_tasks
@@ -831,37 +856,8 @@ pub fn remove_channel(access: &Access, pbx_id: PbxCallId) {
     if let Some(destination) = destination {
         ConferenceTaskCancellation::cancel(destination);
     }
-    access
-        .shared
-        .media_anchors
-        .lock_unpoisoned()
-        .remove_call(pbx_id);
-    access
-        .shared
-        .media_anchor_restores
-        .lock_unpoisoned()
-        .remove_call(pbx_id);
-    access
-        .shared
-        .audio_packet_ms
-        .lock_unpoisoned()
-        .remove(&pbx_id);
-    access
-        .shared
-        .audio_preferences
-        .lock_unpoisoned()
-        .remove(&pbx_id);
-    access
-        .shared
-        .audio_encryption_admissions
-        .lock_unpoisoned()
-        .remove(&pbx_id);
-    access
-        .shared
-        .forwarded_calls
-        .lock_unpoisoned()
-        .remove(&pbx_id);
-    clear_no_answer_route(access, pbx_id);
+    access.shared.media_runtime.remove_call(pbx_id);
+    let _ = access.shared.controller.retire_call_runtime(pbx_id);
     let binding = access.shared.channels.lock_unpoisoned().remove(&pbx_id);
     if let Some(binding) = binding {
         drop(binding.close());

@@ -76,7 +76,7 @@ pub(super) fn packet_body(capture: &PacketCaptureSnapshot, diagnostic_event_id: 
 fn state_snapshot(shared: &Shared) -> Value {
     let configuration = config_snapshot(&shared.config.read_unpoisoned());
     let (devices, registered_devices_total, calls, calls_total) = {
-        let controller = shared.controller.lock_unpoisoned();
+        let controller = shared.controller.snapshot();
         let mut devices = BTreeMap::new();
         let mut registered_devices_total = 0_usize;
         for (device_id, device) in controller.registered_devices() {
@@ -106,6 +106,7 @@ fn state_snapshot(shared: &Shared) -> Value {
         .map(|(device_id, device)| registered_device_snapshot(device_id.as_str(), device))
         .collect::<Vec<_>>();
     let calls = calls.values().map(call_snapshot).collect::<Vec<_>>();
+    let controller = shared.controller.snapshot();
     json!({
         "configuration": configuration,
         "registered_devices": devices,
@@ -115,15 +116,15 @@ fn state_snapshot(shared: &Shared) -> Value {
         "calls_total": calls_total,
         "calls_truncated": calls_total.saturating_sub(calls.len()),
         "native_channels": shared.channels.lock_unpoisoned().len(),
-        "assigned_channel_ids": sorted_debug_map(&shared.assigned_channel_ids.lock_unpoisoned()),
-        "audio_packet_ms": sorted_debug_map(&shared.audio_packet_ms.lock_unpoisoned()),
-        "audio_preferences": sorted_debug_map(&shared.audio_preferences.lock_unpoisoned()),
-        "bridges": sorted_debug_keys(&shared.bridges.lock_unpoisoned()),
-        "barge_bridges": sorted_debug_keys(&shared.barge_bridges.lock_unpoisoned()),
-        "forwarded_calls": sorted_debug_map(&shared.forwarded_calls.lock_unpoisoned()),
-        "no_answer_plans": sorted_debug_map(&shared.no_answer_plans.lock_unpoisoned()),
-        "pending_parks": sorted_debug_map(&shared.pending_parks.lock_unpoisoned()),
-        "pending_retrievals": sorted_debug_map(&shared.pending_retrievals.lock_unpoisoned()),
+        "assigned_channel_ids": sorted_debug_map(&controller.call_runtime_records().filter_map(|(id, record)| record.assigned_channel_id.as_ref().map(|value| (*id, value))).collect()),
+        "audio_packet_ms": sorted_debug_map(&controller.call_runtime_records().filter_map(|(id, record)| record.audio_packet_ms.as_ref().map(|value| (*id, value))).collect()),
+        "audio_preferences": sorted_debug_map(&controller.call_runtime_records().filter_map(|(id, record)| record.audio_preferences.as_ref().map(|value| (*id, value))).collect()),
+        "bridges": shared.bridge_snapshot().0.iter().map(|bridge| format!("{bridge:?}")).collect::<Vec<_>>(),
+        "barge_bridges": shared.bridge_snapshot().1.iter().map(|bridge| format!("{bridge:?}")).collect::<Vec<_>>(),
+        "forwarded_calls": sorted_debug_map(&controller.call_runtime_records().filter_map(|(id, record)| record.forwarding.as_ref().map(|value| (*id, value))).collect()),
+        "no_answer_plans": sorted_debug_map(&controller.call_runtime_records().filter_map(|(id, record)| record.no_answer.as_ref().map(|value| (*id, value))).collect()),
+        "pending_parks": sorted_debug_map(controller.pending_parks()),
+        "pending_retrievals": sorted_debug_map(controller.pending_retrievals()),
     })
 }
 
@@ -468,17 +469,6 @@ where
     let mut items = std::collections::BTreeSet::new();
     for (key, value) in values {
         retain_smallest_string(&mut items, format!("{key:?}={value:?}"));
-    }
-    bounded_strings(values.len(), items)
-}
-
-fn sorted_debug_keys<Key, Entry>(values: &std::collections::HashMap<Key, Entry>) -> Value
-where
-    Key: std::fmt::Debug,
-{
-    let mut items = std::collections::BTreeSet::new();
-    for key in values.keys() {
-        retain_smallest_string(&mut items, format!("{key:?}"));
     }
     bounded_strings(values.len(), items)
 }

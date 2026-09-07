@@ -84,6 +84,18 @@ impl<T: Clone> ResourceBinding<T> {
         state.phase != BindingPhase::Closed
     }
 
+    /// Close admission only if no operation is in flight. Native unload paths
+    /// must not wait while holding loader locks needed by an active operation,
+    /// or when an operation re-enters unload on its own callback thread.
+    pub(crate) fn try_suspend(&self) -> bool {
+        let mut state = lock(&self.state);
+        if state.phase != BindingPhase::Active || state.active_operations != 0 {
+            return false;
+        }
+        state.phase = BindingPhase::Suspended;
+        true
+    }
+
     pub(crate) fn resume(&self) -> bool {
         let mut state = lock(&self.state);
         if state.phase != BindingPhase::Suspended {
@@ -236,5 +248,17 @@ mod tests {
             binding.try_enter().map(|permit| *permit.resource()),
             Some(Token(1))
         );
+    }
+    #[test]
+    fn reentrant_unload_refuses_inflight_operations_without_closing_admission() {
+        let binding = ResourceBinding::new(());
+        let operation = binding.try_enter().unwrap();
+        assert!(!binding.try_suspend());
+        assert!(binding.try_enter().is_some());
+        drop(operation);
+        assert!(binding.try_suspend());
+        assert!(binding.try_enter().is_none());
+        assert!(binding.resume());
+        assert!(binding.try_enter().is_some());
     }
 }

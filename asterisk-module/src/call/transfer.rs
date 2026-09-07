@@ -358,7 +358,7 @@ pub enum TransferRejection {
     CompletionInProgress,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct TransferRegistry {
     next_id: u64,
     by_device: HashMap<DeviceId, TransferTransaction>,

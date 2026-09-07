@@ -378,53 +378,9 @@ impl Controller {
         vec![effect.into()]
     }
 
-    pub(in crate::runtime::controller) fn video_plan_for_device_matching(
-        &self,
-        device_id: &DeviceId,
-        session_generation: SessionGeneration,
-        call_id: CallId,
-        state_matches: impl FnOnce(&VideoMediaState) -> bool,
-    ) -> Option<&VideoPlan> {
-        let device = self.devices.get(device_id)?;
-        if device.session_generation != session_generation {
-            return None;
-        }
-        let appearance = self.appearance_for_call(call_id)?;
-        if &appearance.device_id != device_id || appearance.state != CallState::Connected {
-            return None;
-        }
-        if !state_matches(&appearance.video) {
-            return None;
-        }
-        appearance
-            .video
-            .plan()
-            .filter(|plan| plan.session_generation == session_generation)
-    }
-
     /// Returns the plan only while its exact receive-open command is pending.
-    pub fn opening_video_receive_plan_for_device(
-        &self,
-        device_id: &DeviceId,
-        session_generation: SessionGeneration,
-        call_id: CallId,
-    ) -> Option<&VideoPlan> {
-        self.video_plan_for_device_matching(device_id, session_generation, call_id, |video| {
-            video.receive() == VideoStreamState::Opening
-        })
-    }
 
     /// Returns the plan only while its exact transmit-start command is pending.
-    pub fn opening_video_transmit_plan_for_device(
-        &self,
-        device_id: &DeviceId,
-        session_generation: SessionGeneration,
-        call_id: CallId,
-    ) -> Option<&VideoPlan> {
-        self.video_plan_for_device_matching(device_id, session_generation, call_id, |video| {
-            video.transmit() == VideoStreamState::Opening
-        })
-    }
 
     pub fn video_receive_opened_for_device(
         &mut self,
@@ -465,64 +421,6 @@ impl Controller {
             && appearance
                 .video
                 .opened_transmit(codec, endpoint, passthrough_party_id)
-    }
-
-    pub fn refresh_video_for_pbx(&self, pbx_id: PbxCallId) -> Vec<DriverEffect> {
-        let Some(call) = self.active_call_by_pbx(pbx_id) else {
-            return Vec::new();
-        };
-        let Some(appearance) = self.appearance_for_call(call.sccp_id) else {
-            return Vec::new();
-        };
-        let VideoMediaState::Ready {
-            plan,
-            transmit: VideoStreamState::Open { .. },
-            transmit_token: Some(passthrough_party_id),
-            ..
-        } = &appearance.video
-        else {
-            return Vec::new();
-        };
-        if appearance.state != CallState::Connected
-            || self
-                .devices
-                .get(&appearance.device_id)
-                .is_none_or(|device| {
-                    device.session_generation != plan.session_generation
-                        || device.active_call != Some(call.sccp_id)
-                })
-        {
-            return Vec::new();
-        }
-        vec![
-            HandsetEffect::RefreshVideo {
-                device_id: appearance.device_id.clone(),
-                call_id: call.sccp_id,
-                session_generation: plan.session_generation,
-                passthrough_party_id: *passthrough_party_id,
-            }
-            .into(),
-        ]
-    }
-
-    pub fn video_refresh_is_current(
-        &self,
-        device_id: &DeviceId,
-        session_generation: SessionGeneration,
-        call_id: CallId,
-        passthrough_party_id: PassthroughPartyId,
-    ) -> bool {
-        self.video_plan_for_device_matching(device_id, session_generation, call_id, |video| {
-            matches!(
-                video,
-                VideoMediaState::Ready {
-                    transmit: VideoStreamState::Open { .. },
-                    transmit_token: Some(token),
-                    ..
-                } if *token == passthrough_party_id
-            )
-        })
-        .is_some()
     }
 
     pub fn begin_video_transmit_for_device(
@@ -737,14 +635,10 @@ impl Controller {
         self.begin_voicemail_claim(&appearance, VoicemailAction::ImmediateDivert, target)
     }
 
-    /// Changes the codec for one outbound channel before either media stream
-    /// has started. The previous codec is returned so an adapter can restore
-    /// controller state if its native channel update fails.
-    pub fn set_pre_dial_codec(
-        &mut self,
+    pub(in crate::runtime::controller) fn validate_pre_dial_codec(
+        &self,
         pbx_id: PbxCallId,
-        codec: Codec,
-    ) -> Result<Codec, CodecPreferenceRejection> {
+    ) -> Result<(CallAppearanceId, Codec), CodecPreferenceRejection> {
         let call = self
             .call_registry
             .pbx
@@ -769,22 +663,29 @@ impl Controller {
         {
             return Err(CodecPreferenceRejection::NotPreDial);
         }
-        let previous = appearance.codec;
+        Ok((*appearance_id, appearance.codec))
+    }
+
+    pub fn set_pre_dial_codec(
+        &mut self,
+        pbx_id: PbxCallId,
+        codec: Codec,
+    ) -> Result<Codec, CodecPreferenceRejection> {
+        let (appearance_id, previous) = self.validate_pre_dial_codec(pbx_id)?;
         self.call_registry
             .appearances
-            .get_mut(appearance_id)
+            .get_mut(&appearance_id)
             .expect("validated call appearance")
             .codec = codec;
         debug_assert!(self.invariant_error().is_none());
         Ok(previous)
     }
 
-    pub fn set_held_codec(
-        &mut self,
+    pub(in crate::runtime::controller) fn validate_held_codec(
+        &self,
         pbx_id: PbxCallId,
         call_id: CallId,
-        codec: Codec,
-    ) -> Option<Codec> {
+    ) -> Option<(CallAppearanceId, Codec)> {
         let call = self.call_registry.pbx.get(&pbx_id)?;
         if call.state != CallState::Held {
             return None;
@@ -801,7 +702,16 @@ impl Controller {
         {
             return None;
         }
-        let previous = appearance.codec;
+        Some((appearance_id, appearance.codec))
+    }
+
+    pub fn set_held_codec(
+        &mut self,
+        pbx_id: PbxCallId,
+        call_id: CallId,
+        codec: Codec,
+    ) -> Option<Codec> {
+        let (appearance_id, previous) = self.validate_held_codec(pbx_id, call_id)?;
         self.call_registry
             .appearances
             .get_mut(&appearance_id)?
