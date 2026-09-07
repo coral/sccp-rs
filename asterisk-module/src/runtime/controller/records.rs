@@ -13,6 +13,13 @@ pub(crate) struct CallRuntimeRecord {
     pub assigned_channel_id: Option<String>,
     pub audio_packet_ms: Option<u32>,
     pub audio_preferences: Option<Vec<PbxAudioFormat>>,
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "native call routing consumes the retained forwarding operation"
+        )
+    )]
     pub forwarding: Option<ForwardingOperation>,
     pub no_answer: Option<SharedNoAnswerRoute>,
     pub(super) codec_mutation: Option<super::codec_mutation::PendingCodecMutation>,
@@ -194,7 +201,10 @@ impl ControllerSnapshot {
         self.call_runtime.get(&pbx_id)
     }
 
-    #[cfg(any(test, feature = "telemetry"))]
+    #[cfg(all(
+        feature = "telemetry",
+        any(feature = "asterisk-22", feature = "asterisk-latest")
+    ))]
     pub fn call_runtime_records(&self) -> impl Iterator<Item = (&PbxCallId, &CallRuntimeRecord)> {
         self.call_runtime.iter()
     }

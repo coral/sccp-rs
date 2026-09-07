@@ -307,6 +307,10 @@ macro_rules! controller_commands {
     ($( $variant:ident => $method:ident (
         $( $arg:ident: $public:ty => $owned:ty = $capture:expr => $pass:expr ),* $(,)?
     ) -> $result:ty $(, async $async_method:ident)?; )*) => {
+        #[cfg_attr(
+            all(test, feature = "development"),
+            expect(dead_code, reason = "owner tests retain the complete command catalog without native producers")
+        )]
         pub(super) enum ControllerCommand {
             $( $variant { $($arg: $owned,)* reply: ControllerReply<$result> }, )*
         }
@@ -327,6 +331,10 @@ macro_rules! controller_commands {
             }
         }
 
+        #[cfg_attr(
+            all(test, feature = "development"),
+            expect(dead_code, reason = "native handle entrypoints are compiled but not all invoked by header-free owner tests")
+        )]
         impl ControllerHandle {
             $( controller_handle_method!($variant, $method, ($($arg: $public => $owned = $capture),*), $result $(, $async_method)?); )*
         }

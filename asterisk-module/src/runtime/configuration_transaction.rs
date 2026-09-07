@@ -16,9 +16,11 @@ use super::owner::{EffectExecutor, OperationId, RuntimeHandle, RuntimeOwner, Run
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigurationOperation {
     Features,
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     Schedules,
     Mobility,
     Reload,
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     Registration,
 }
 
@@ -29,6 +31,7 @@ pub(crate) struct ConfigurationLease {
 }
 
 enum Grant {
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     Sync(std::sync::mpsc::SyncSender<ConfigurationLease>),
     Async(oneshot::Sender<ConfigurationLease>),
 }
@@ -36,6 +39,7 @@ enum Grant {
 impl Grant {
     fn send(self, lease: ConfigurationLease) {
         match self {
+            #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
             Self::Sync(reply) => {
                 let _ = reply.send(lease);
             }
@@ -65,6 +69,7 @@ pub(crate) enum ConfigurationTransactionError {
 }
 
 impl ConfigurationTransactions {
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub fn begin(
         &self,
         operation: ConfigurationOperation,

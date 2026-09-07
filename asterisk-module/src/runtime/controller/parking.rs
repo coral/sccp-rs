@@ -301,6 +301,7 @@ impl Controller {
     }
 }
 impl ControllerSnapshot {
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn parking(&self) -> &ParkingRegistry {
         &self.parking.registry
     }
@@ -308,6 +309,7 @@ impl ControllerSnapshot {
     pub(crate) fn pending_parks(&self) -> &HashMap<CallId, PendingPark> {
         &self.parking.parks
     }
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn pending_retrievals(&self) -> &HashMap<CallId, PendingRetrieval> {
         &self.parking.retrievals
     }

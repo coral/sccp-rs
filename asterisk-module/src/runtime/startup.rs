@@ -23,6 +23,7 @@ impl<T> StartupTask<T> {
         }
     }
 
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub fn into_task(mut self) -> tokio::task::JoinHandle<T> {
         self.close.take();
         self.task

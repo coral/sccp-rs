@@ -108,6 +108,11 @@ results to stdout and diagnostics to stderr.
   `tests/` module selected with `#[path]`.
 - Scope lint exceptions to the smallest binding-heavy item or module and state
   why the exception is inherent to that boundary.
+- For private runtime APIs consumed only by native adapters, gate native-only
+  entrypoints with the native features. When owner tests need the complete
+  production command or snapshot types, scope `expect(dead_code)` to the
+  affected item and development test configuration, with a reason. Keep native
+  builds linted; do not widen visibility or add artificial calls to silence lints.
 
 ### Visibility and module APIs
 
@@ -358,6 +363,11 @@ Unsafe code belongs at a narrow native edge, never in ordinary domain models.
 
 Tests are executable contracts, not incidental coverage.
 
+- Match CI's feature selection and warning policy when verifying a change.
+  For Asterisk development tests, run
+  `RUSTFLAGS=-Dwarnings cargo test --locked -p asterisk-module --lib --tests`;
+  native builds exercise a different set of consumers and cannot replace this
+  check.
 - Name tests as complete behavioral claims in `snake_case`, for example
   `replacement_calls_and_media_requests_never_reuse_identifiers`.
 - Put focused unit tests beside the code. Use integration tests for public

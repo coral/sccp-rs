@@ -78,6 +78,7 @@ impl<T> Admitted<T> {
             permit,
         }
     }
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> Admitted<U> {
         Admitted {
             value: transform(self.value),

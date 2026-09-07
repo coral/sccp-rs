@@ -8,8 +8,8 @@ use std::pin::Pin;
 use tokio::task::JoinSet;
 
 use super::mailbox::{
-    AdmissionError, MailboxReceiver, MailboxReservation, MailboxSender, QueueSnapshot,
-    RUNTIME_MAILBOX_CAPACITY, WorkPermit, mailbox,
+    AdmissionError, MailboxReceiver, MailboxReservation, MailboxSender, QueueSnapshot, WorkPermit,
+    mailbox,
 };
 
 type Work = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -27,8 +27,9 @@ pub(crate) struct Workers {
     requests: MailboxReceiver<Work>,
 }
 
+#[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
 pub(crate) fn workers() -> (WorkerHandle, Workers) {
-    workers_with_capacity(RUNTIME_MAILBOX_CAPACITY)
+    workers_with_capacity(super::mailbox::RUNTIME_MAILBOX_CAPACITY)
 }
 
 fn workers_with_capacity(capacity: usize) -> (WorkerHandle, Workers) {

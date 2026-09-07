@@ -193,6 +193,7 @@ impl ParkingEvents {
         }
     }
 
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub async fn updated(&self) {
         self.0.updates.notified().await;
     }

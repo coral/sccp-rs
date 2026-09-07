@@ -15,10 +15,7 @@ use sccp_protocol::ConferenceId;
 
 use super::backend::PbxCallId;
 use super::conference_announcement::{AnnouncementGeneration, allocate_generation};
-use super::mailbox::{
-    MailboxReceiver, MailboxReservation, MailboxSender, RUNTIME_MAILBOX_CAPACITY, WorkPermit,
-    mailbox,
-};
+use super::mailbox::{MailboxReceiver, MailboxReservation, MailboxSender, WorkPermit, mailbox};
 use crate::media::direct::{MediaAnchorReason, MediaAnchorRegistry, MediaAnchorRestores};
 
 pub(crate) trait MediaEffects<C>: Clone + Send + Sync + 'static {
@@ -33,10 +30,31 @@ pub(crate) trait MediaEffects<C>: Clone + Send + Sync + 'static {
 pub(crate) struct ActiveConferenceAnnouncement<E: MediaEffects<C>, C: Clone + Send + Sync + 'static>
 {
     pub(crate) generation: AnnouncementGeneration,
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "consumed by the native announcement restoration executor"
+        )
+    )]
     pub(crate) call_ids: Vec<PbxCallId>,
     pub(crate) completion: Option<AnnouncementTimer<E>>,
     pub(crate) anchors: Vec<AnchorLease<E, C>>,
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "consumed by the native announcement restoration executor"
+        )
+    )]
     pub(crate) direct_calls: Vec<C>,
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "consumed by the native announcement restoration executor"
+        )
+    )]
     pub(crate) restore_attempts: u8,
 }
 
@@ -231,6 +249,7 @@ enum MediaCommand<E: MediaEffects<C>, C: Clone + Send + Sync + 'static> {
         ConferenceId,
         mpsc::SyncSender<Option<AnnouncementGeneration>>,
     ),
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     AnnouncementIds(mpsc::SyncSender<Vec<ConferenceId>>),
     DeferAnnouncement(ConferenceId, AnnouncementGeneration, AnnouncementTimer<E>),
 }
@@ -388,6 +407,7 @@ impl<E: MediaEffects<C>, C: Clone + Send + Sync + 'static> MediaHandle<E, C> {
             .flatten()
     }
 
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn announcement_ids(&self) -> Vec<ConferenceId> {
         self.request(MediaCommand::AnnouncementIds)
             .unwrap_or_default()
@@ -406,8 +426,9 @@ impl<E: MediaEffects<C>, C: Clone + Send + Sync + 'static> MediaHandle<E, C> {
 }
 
 impl<E: MediaEffects<C>, C: Clone + Send + Sync + 'static> MediaOwner<E, C> {
+    #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
     pub(crate) fn start() -> Result<(MediaHandle<E, C>, thread::JoinHandle<()>), std::io::Error> {
-        Self::with_capacity(RUNTIME_MAILBOX_CAPACITY)
+        Self::with_capacity(super::mailbox::RUNTIME_MAILBOX_CAPACITY)
     }
 
     fn with_capacity(
@@ -721,6 +742,7 @@ impl<E: MediaEffects<C>, C: Clone + Send + Sync + 'static> MediaOwner<E, C> {
             MediaCommand::AnnouncementGeneration(id, reply) => {
                 let _ = reply.send(self.announcements.get(&id).map(|active| active.generation));
             }
+            #[cfg(any(feature = "asterisk-22", feature = "asterisk-latest"))]
             MediaCommand::AnnouncementIds(reply) => {
                 let _ = reply.send(self.announcements.keys().copied().collect());
             }

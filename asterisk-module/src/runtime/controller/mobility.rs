@@ -28,6 +28,13 @@ pub(crate) struct MobilitySnapshot {
     pending: bool,
 }
 
+#[cfg_attr(
+    all(test, feature = "development"),
+    expect(
+        dead_code,
+        reason = "the native mobility and configuration adapters read this snapshot surface"
+    )
+)]
 impl MobilitySnapshot {
     pub fn appearance_for_slot(&self, slot: &MobilitySlot) -> Option<&RoamingAppearance> {
         self.appearances
@@ -64,6 +71,10 @@ impl MobilitySnapshot {
 }
 
 impl ControllerSnapshot {
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(dead_code, reason = "the native mobility adapter reads this snapshot")
+    )]
     pub fn mobility(&self) -> &MobilitySnapshot {
         &self.mobility
     }
@@ -191,6 +202,14 @@ mod tests {
         let device = DeviceId::new("SEP001122334455").unwrap();
         let slot = MobilitySlot::new(device.clone(), 1).unwrap();
         let first = controller.reserve_mobility_prompt(slot.clone()).unwrap();
+        let target = sccp_protocol::StationSessionTarget::new(
+            device.clone(),
+            controller
+                .registered_device(&device)
+                .unwrap()
+                .session_generation,
+        );
+        assert_eq!(first.target, target);
         assert!(first.replaced.is_empty());
         let second = controller.reserve_mobility_prompt(slot.clone()).unwrap();
         assert_eq!(second.replaced, [first.transaction_id]);
@@ -204,6 +223,7 @@ mod tests {
         let reload = controller.reconcile_mobility(config).unwrap();
         assert!(reload.removed.is_empty());
         assert_eq!(reload.cancelled_prompts.len(), 1);
+        assert_eq!(reload.cancelled_prompts[0].0, target);
         assert_eq!(reload.cancelled_prompts[0].1, second.transaction_id);
         assert!(
             controller

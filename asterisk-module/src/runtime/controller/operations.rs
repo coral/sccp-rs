@@ -2,6 +2,13 @@
 
 use super::*;
 
+#[cfg_attr(
+    all(test, feature = "development"),
+    expect(
+        dead_code,
+        reason = "native hold effect executors consume these payloads"
+    )
+)]
 pub(crate) enum HoldPlan {
     Missing,
     Regular(Vec<DriverEffect>),

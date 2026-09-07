@@ -150,6 +150,13 @@ impl Controller {
 }
 
 impl ControllerSnapshot {
+    #[cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "the native forwarding UI reads this snapshot query"
+        )
+    )]
     pub fn forwarding_entry_for_call(&self, call_id: CallId) -> Option<&ForwardingEntry> {
         self.forwarding_entries.for_call(call_id)
     }

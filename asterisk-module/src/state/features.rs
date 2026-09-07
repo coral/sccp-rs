@@ -28,6 +28,13 @@ pub(crate) fn registration_state_or_fallback<E>(
 
 #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
 #[derive(Clone)]
+#[cfg_attr(
+    all(test, feature = "development"),
+    expect(
+        dead_code,
+        reason = "native feature producers are absent from header-free owner tests"
+    )
+)]
 pub(crate) enum FeatureMutation {
     Dnd(crate::call::dnd::DndMutation),
     TogglePrivacy,
@@ -76,6 +83,13 @@ impl FeatureMutation {
 }
 
 #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
+#[cfg_attr(
+    all(test, feature = "development"),
+    expect(
+        dead_code,
+        reason = "native persistence workers consume prepared feature plans"
+    )
+)]
 pub(crate) struct DeviceFeaturePlan {
     pub expected: Option<DeviceFeatureState>,
     pub previous: DeviceFeatureState,

@@ -1,7 +1,8 @@
 //! Shared read-only controller queries for live state and immutable snapshots.
 
 macro_rules! controller_queries {
-    ($state:ty) => {
+    ($state:ty $(, $attribute:meta)?) => {
+        $(#[$attribute])?
         impl $state {
     pub fn active_call_by_pbx(&self, pbx_id: PbxCallId) -> Option<CallSnapshot> {
         let appearance_id = self.call_registry.pbx.get(&pbx_id)?.active_appearance?;

@@ -91,7 +91,16 @@ pub(crate) use operations::HoldPlan;
 
 queries::controller_queries!(Controller);
 #[cfg(any(test, feature = "asterisk-22", feature = "asterisk-latest"))]
-queries::controller_queries!(ControllerSnapshot);
+queries::controller_queries!(
+    ControllerSnapshot,
+    cfg_attr(
+        all(test, feature = "development"),
+        expect(
+            dead_code,
+            reason = "the native snapshot consumers are absent from header-free owner tests"
+        )
+    )
+);
 
 /// Identity of one handset presentation of a PBX call.
 ///
