@@ -1358,8 +1358,7 @@ struct WireOffHookWithCallingParty<const TEXT_BYTES: usize, const ALIGNMENT_BYTE
 words!(WireStimulus {
     stimulus,
     instance,
-    call_reference,
-    status
+    call_reference
 });
 
 const CAPABILITIES_RESPONSE_STANDARD_ENTRIES: usize = 18;
@@ -2373,12 +2372,18 @@ impl ClientMessage {
             }
             wire_id::ENBLOC_CALL => decode_enbloc(p, protocol_version, frame.message_id),
             wire_id::STIMULUS => {
-                let value: WireStimulus = decode(frame.message_id, p)?;
+                // The captured 7960 v11 event omits the final status word.
+                let status = match p.len() {
+                    12 => None,
+                    16 => Some(decode::<WireOneWord>(frame.message_id, &p[12..])?.value),
+                    _ => return Err(CodecError::InvalidLength(frame.message_id)),
+                };
+                let value: WireStimulus = decode(frame.message_id, &p[..12])?;
                 Ok(Self::Stimulus {
                     stimulus: Stimulus::from(value.stimulus),
                     instance: value.instance,
                     call_reference: value.call_reference,
-                    status: value.status,
+                    status,
                 })
             }
             wire_id::OFF_HOOK => {
@@ -2635,11 +2640,25 @@ impl ClientMessage {
                 Ok(Self::ServiceUrlStatusRequest { index: value.value })
             }
             wire_id::FEATURE_STAT_REQ => {
-                let value: WireFeatureStatusRequest = decode(frame.message_id, p)?;
-                Ok(Self::FeatureStatusRequest {
-                    index: value.index,
-                    capabilities: value.capabilities,
-                })
+                // Captured 7960 v11 requests omit capabilities; 7965 v22 includes
+                // them. No version boundary is established; see docs/7960_FEATURE_STATE.md.
+                match p.len() {
+                    4 => {
+                        let value: WireOneWord = decode(frame.message_id, p)?;
+                        Ok(Self::FeatureStatusRequest {
+                            index: value.value,
+                            capabilities: None,
+                        })
+                    }
+                    8 => {
+                        let value: WireFeatureStatusRequest = decode(frame.message_id, p)?;
+                        Ok(Self::FeatureStatusRequest {
+                            index: value.index,
+                            capabilities: Some(value.capabilities),
+                        })
+                    }
+                    _ => Err(CodecError::InvalidLength(frame.message_id)),
+                }
             }
             wire_id::MEDIA_TRANSMISSION_FAILURE => match protocol_version {
                 17.. => {
@@ -3037,9 +3056,11 @@ impl ClientMessage {
                         stimulus: stimulus.wire_value(),
                         instance: *instance,
                         call_reference: *call_reference,
-                        status: *status,
                     },
                 )?;
+                if let Some(status) = status {
+                    payload.extend(encode(wire_id::STIMULUS, &WireOneWord { value: *status })?);
+                }
                 wire_id::STIMULUS
             }
             Self::OffHook {
@@ -3398,13 +3419,16 @@ impl ClientMessage {
                 index,
                 capabilities,
             } => {
-                payload = encode(
-                    wire_id::FEATURE_STAT_REQ,
-                    &WireFeatureStatusRequest {
-                        index: *index,
-                        capabilities: *capabilities,
-                    },
-                )?;
+                payload = match capabilities {
+                    None => encode(wire_id::FEATURE_STAT_REQ, &WireOneWord { value: *index })?,
+                    Some(capabilities) => encode(
+                        wire_id::FEATURE_STAT_REQ,
+                        &WireFeatureStatusRequest {
+                            index: *index,
+                            capabilities: *capabilities,
+                        },
+                    )?,
+                };
                 wire_id::FEATURE_STAT_REQ
             }
             Self::StartMediaTransmissionAck(ack) => {

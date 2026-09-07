@@ -174,7 +174,7 @@ async fn native_blf_update_is_validated_cached_and_replayed_as_feature_status_on
         .write_all(
             &ClientMessage::FeatureStatusRequest {
                 index: 2,
-                capabilities: 0,
+                capabilities: Some(0),
             }
             .encode(protocol)
             .unwrap(),

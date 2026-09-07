@@ -180,7 +180,7 @@ fn station_ui_input_fixtures_cover_key_hook_and_accessory_layouts() {
                 stimulus: Stimulus::Line,
                 instance: 2,
                 call_reference: 42,
-                status: 1,
+                status: Some(1),
             },
         ),
         (
@@ -388,7 +388,7 @@ fn station_ui_request_fixtures_cover_every_status_query_layout() {
             words(&[7, 0x0102_0304]),
             ClientMessage::FeatureStatusRequest {
                 index: 7,
-                capabilities: 0x0102_0304,
+                capabilities: Some(0x0102_0304),
             },
         ),
     ] {
@@ -985,4 +985,66 @@ fn station_ui_call_information_fixtures_cover_legacy_and_dynamic_layouts() {
             text: "2001".into(),
         },
     );
+}
+
+#[test]
+fn feature_requests_preserve_absent_and_explicit_capabilities_and_reject_partial_words() {
+    // Constructed layout cases, not captured handset fixtures. There is no
+    // established version boundary for the optional capabilities word.
+    for protocol in [ProtocolVersion::V11, ProtocolVersion::V22] {
+        for capabilities in [None, Some(0), Some(0x0102_0304)] {
+            let mut payload = words(&[7]);
+            if let Some(value) = capabilities {
+                payload.extend(words(&[value]));
+            }
+            let raw = raw_frame(protocol, 0x0034, &payload);
+            let expected = ClientMessage::FeatureStatusRequest {
+                index: 7,
+                capabilities,
+            };
+            assert_eq!(
+                ClientMessage::decode_with_version(one_frame(&raw), protocol).unwrap(),
+                expected
+            );
+            assert_eq!(expected.encode(protocol).unwrap(), raw);
+        }
+        for length in [0, 1, 2, 3, 5, 6, 7, 9, 12] {
+            let raw = raw_frame(protocol, 0x0034, &vec![0; length]);
+            assert!(
+                ClientMessage::decode_with_version(one_frame(&raw), protocol).is_err(),
+                "length {length}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stimulus_events_preserve_optional_status_and_reject_partial_words() {
+    for protocol in [ProtocolVersion::V11, ProtocolVersion::V22] {
+        for status in [None, Some(0), Some(0x0102_0304)] {
+            let mut payload = words(&[0x13, 1, 42]);
+            if let Some(value) = status {
+                payload.extend(words(&[value]));
+            }
+            let raw = raw_frame(protocol, 0x0005, &payload);
+            let expected = ClientMessage::Stimulus {
+                stimulus: Stimulus::Privacy,
+                instance: 1,
+                call_reference: 42,
+                status,
+            };
+            assert_eq!(
+                ClientMessage::decode_with_version(one_frame(&raw), protocol).unwrap(),
+                expected
+            );
+            assert_eq!(expected.encode(protocol).unwrap(), raw);
+        }
+        for length in (0..=20).filter(|length| ![12, 16].contains(length)) {
+            let raw = raw_frame(protocol, 0x0005, &vec![0; length]);
+            assert!(
+                ClientMessage::decode_with_version(one_frame(&raw), protocol).is_err(),
+                "length {length}"
+            );
+        }
+    }
 }

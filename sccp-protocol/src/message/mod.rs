@@ -1665,7 +1665,7 @@ pub enum ClientMessage {
         stimulus: Stimulus,
         instance: u32,
         call_reference: u32,
-        status: u32,
+        status: Option<u32>,
     },
     /// Reports that the station handset or audio path went off hook.
     /// Starts or resumes call handling for the identified line and call.
@@ -1816,8 +1816,8 @@ pub enum ClientMessage {
     /// Carries the feature index and station capability bits.
     FeatureStatusRequest {
         index: u32,
-        /// Station feature-capability bits included in the request layout.
-        capabilities: u32,
+        /// Optional station feature-capability bits; `None` preserves the index-only layout.
+        capabilities: Option<u32>,
     },
     /// Acknowledges a request to start audio transmission.
     /// Reports the station's result for the requested media stream.
@@ -3058,7 +3058,7 @@ mod tests {
         assert_client_round_trip(
             ClientMessage::FeatureStatusRequest {
                 index: 7,
-                capabilities: 1,
+                capabilities: Some(1),
             },
             ProtocolVersion::V22,
         );

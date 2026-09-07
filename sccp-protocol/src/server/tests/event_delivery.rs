@@ -147,7 +147,7 @@ async fn saturated_station_completion(stimulus: bool) {
             stimulus: Stimulus::EndCall,
             instance: 1,
             call_reference,
-            status: 0,
+            status: Some(0),
         }
     } else {
         ClientMessage::OnHook {

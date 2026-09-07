@@ -256,7 +256,7 @@ async fn registered_phone_receives_its_mixed_button_template() {
         .write_all(
             &ClientMessage::FeatureStatusRequest {
                 index: 1,
-                capabilities: 0,
+                capabilities: Some(0),
             }
             .encode(ProtocolVersion::V22)
             .unwrap(),
@@ -282,7 +282,7 @@ async fn registered_phone_receives_its_mixed_button_template() {
         .write_all(
             &ClientMessage::FeatureStatusRequest {
                 index: 2,
-                capabilities: 0,
+                capabilities: Some(0),
             }
             .encode(ProtocolVersion::V22)
             .unwrap(),
@@ -331,7 +331,7 @@ async fn registered_phone_receives_its_mixed_button_template() {
     let unknown_requests = [
         ClientMessage::FeatureStatusRequest {
             index: 99,
-            capabilities: 0,
+            capabilities: Some(0),
         }
         .encode(ProtocolVersion::V22)
         .unwrap(),
@@ -1041,7 +1041,7 @@ async fn registered_handset_routes_every_configured_conference_control_with_exac
                     stimulus,
                     instance: 1,
                     call_reference: 7001,
-                    status: 0,
+                    status: Some(0),
                 }
                 .encode(protocol)
                 .unwrap(),

@@ -3043,7 +3043,7 @@ async fn outbound_media_writes_receive_then_transmit_without_an_ack_boundary() {
                 stimulus: Stimulus::Line,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -3929,7 +3929,7 @@ async fn invalid_coupled_media_is_rejected_without_disconnect() {
                 stimulus: Stimulus::Line,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -4036,7 +4036,7 @@ async fn configured_dtmf_mode_selects_rtp_or_signaling_without_duplicate_digits(
                 stimulus: Stimulus::Line,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),

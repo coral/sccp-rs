@@ -6275,7 +6275,7 @@ fn feature_status(
     feature_status_for_station(
         device,
         instance,
-        capabilities,
+        Some(capabilities),
         ProtocolVersion::V15,
         DeviceType::Undefined,
         PhoneFeatures::empty(),
@@ -6285,7 +6285,7 @@ fn feature_status(
 fn feature_status_for_station(
     device: &DeviceDefinition,
     instance: u32,
-    _capabilities: u32,
+    _capabilities: Option<u32>,
     protocol: ProtocolVersion,
     device_type: DeviceType,
     features: PhoneFeatures,

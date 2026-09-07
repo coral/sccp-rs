@@ -83,6 +83,7 @@ struct Extraction {
 #[serde(rename_all = "snake_case")]
 enum ExtractionTool {
     SccpFixturesTshark,
+    PythonTcpReassembly,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +202,16 @@ enum CanonicalMode {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum SemanticExpectation {
+    Stimulus {
+        stimulus: u32,
+        instance: u32,
+        call_reference: u32,
+        status: Option<u32>,
+    },
+    FeatureStatusRequest {
+        index: u32,
+        capabilities: Option<u32>,
+    },
     StartMediaTransmission {
         call_reference: u32,
         passthrough_party_id: u32,
@@ -399,7 +410,9 @@ fn validate_live_privacy(fixture: &Fixture) {
     };
     let sanitized = !fixture.sanitization.is_empty();
     match semantic {
-        SemanticExpectation::CapabilitiesUpdate { .. } => assert!(!sanitized),
+        SemanticExpectation::CapabilitiesUpdate { .. }
+        | SemanticExpectation::FeatureStatusRequest { .. }
+        | SemanticExpectation::Stimulus { .. } => assert!(!sanitized),
         SemanticExpectation::LineStatus {
             directory_number,
             fully_qualified_display_name,
@@ -566,9 +579,12 @@ fn validate_fixture(fixture: &Fixture, files: &mut BTreeSet<String>) {
     );
     let protocol = ProtocolVersion::negotiate(fixture.decode_protocol).expect("manifest protocol");
     if let Some(extraction) = &fixture.extraction {
-        assert_eq!(extraction.tool, ExtractionTool::SccpFixturesTshark);
         assert_eq!(extraction.version, 1);
-        let _ = (extraction.tcp_stream, extraction.direction_ordinal);
+        let _ = (
+            extraction.tool,
+            extraction.tcp_stream,
+            extraction.direction_ordinal,
+        );
     }
     match &fixture.expect {
         Expectation::Decoded {
@@ -794,6 +810,40 @@ fn assert_semantic(
     payload_bytes: usize,
 ) {
     match (actual, expected) {
+        (
+            DecodedMessage::Client(ClientMessage::Stimulus {
+                stimulus,
+                instance,
+                call_reference,
+                status,
+            }),
+            SemanticExpectation::Stimulus {
+                stimulus: expected_stimulus,
+                instance: expected_instance,
+                call_reference: expected_call,
+                status: expected_status,
+            },
+        ) => {
+            assert_eq!(stimulus.wire_value(), *expected_stimulus, "{name} stimulus");
+            assert_eq!(instance, expected_instance, "{name} instance");
+            assert_eq!(call_reference, expected_call, "{name} call");
+            assert_eq!(status, expected_status, "{name} status");
+        }
+
+        (
+            DecodedMessage::Client(ClientMessage::FeatureStatusRequest {
+                index,
+                capabilities,
+            }),
+            SemanticExpectation::FeatureStatusRequest {
+                index: expected_index,
+                capabilities: expected_capabilities,
+            },
+        ) => {
+            assert_eq!(index, expected_index, "{name} index");
+            assert_eq!(capabilities, expected_capabilities, "{name} capabilities");
+        }
+
         (
             DecodedMessage::Server(ServerMessage::StartMediaTransmission {
                 call_reference,

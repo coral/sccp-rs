@@ -40,7 +40,7 @@ async fn parking_button_menu_and_selection_are_typed_end_to_end() {
                 stimulus: Stimulus::ParkingLot,
                 instance: 4,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),

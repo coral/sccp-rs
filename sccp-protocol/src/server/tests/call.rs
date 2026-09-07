@@ -337,7 +337,7 @@ async fn configured_speed_dial_creates_and_routes_an_exact_outbound_call() {
                 stimulus: Stimulus::SpeedDial,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -383,7 +383,7 @@ async fn configured_speed_dial_creates_and_routes_an_exact_outbound_call() {
                 stimulus: Stimulus::BlfSpeedDial,
                 instance: 2,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -423,7 +423,7 @@ async fn configured_speed_dial_creates_and_routes_an_exact_outbound_call() {
                 stimulus: Stimulus::SpeedDial,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -479,7 +479,7 @@ async fn multiple_active_call_feature_allows_speed_dial_beside_connected_call() 
                 stimulus: Stimulus::SpeedDial,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -524,7 +524,7 @@ async fn multiple_active_call_feature_allows_speed_dial_beside_connected_call() 
                 stimulus: Stimulus::BlfSpeedDial,
                 instance: 2,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -589,7 +589,7 @@ async fn speed_dial_await_further_digits_keeps_the_call_in_digit_collection() {
                 stimulus: Stimulus::SpeedDial,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1292,7 +1292,7 @@ async fn redial_reuses_the_last_completed_number_on_the_selected_line() {
                 stimulus: Stimulus::LastNumberRedial,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1578,7 +1578,7 @@ async fn new_call_key_and_stimulus_support_dial_and_backspace() {
                 stimulus: Stimulus::NewCall,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1702,7 +1702,7 @@ async fn pickup_key_and_stimulus_create_an_addressable_call_before_dispatch() {
                 stimulus: Stimulus::GroupCallPickup,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1818,7 +1818,7 @@ async fn meetme_key_and_stimulus_reserve_a_distinct_addressable_call() {
                 stimulus: Stimulus::MeetMeConference,
                 instance: 1,
                 call_reference: first_reference,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -3051,7 +3051,7 @@ async fn two_phone_shared_offer_honors_ring_policy_and_remote_control_events() {
                 stimulus: Stimulus::Conference,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -3072,7 +3072,7 @@ async fn two_phone_shared_offer_honors_ring_policy_and_remote_control_events() {
                 stimulus: Stimulus::Line,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),

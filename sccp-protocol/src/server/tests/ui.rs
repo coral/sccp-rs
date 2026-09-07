@@ -658,7 +658,7 @@ async fn mutable_forwarding_and_feature_state_is_published_and_answered() {
                     .unwrap(),
                 ClientMessage::FeatureStatusRequest {
                     index: 1,
-                    capabilities: 0,
+                    capabilities: Some(0),
                 }
                 .encode(protocol)
                 .unwrap(),
@@ -689,7 +689,7 @@ async fn mutable_forwarding_and_feature_state_is_published_and_answered() {
                 stimulus: Stimulus::DoNotDisturb,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -708,7 +708,7 @@ async fn mutable_forwarding_and_feature_state_is_published_and_answered() {
                 stimulus: Stimulus::DoNotDisturb,
                 instance: 99,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -764,7 +764,7 @@ async fn generic_feature_button_emits_only_for_the_configured_instance() {
                 stimulus: Stimulus::Privacy,
                 instance: 99,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -783,7 +783,7 @@ async fn generic_feature_button_emits_only_for_the_configured_instance() {
                 stimulus: Stimulus::Privacy,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -840,7 +840,7 @@ async fn recording_buttons_accept_both_stimuli_and_mirror_device_wide_state() {
                     stimulus,
                     instance,
                     call_reference: 0,
-                    status: 0,
+                    status: Some(0),
                 }
                 .encode(protocol)
                 .unwrap(),
@@ -902,7 +902,7 @@ async fn recording_buttons_accept_both_stimuli_and_mirror_device_wide_state() {
                 stimulus: Stimulus::MultiblinkFeature,
                 instance: 99,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1030,7 +1030,7 @@ async fn mobility_button_and_live_appearance_refresh_preserve_the_session_call()
                 stimulus: Stimulus::Mobility,
                 instance: 4,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1172,7 +1172,7 @@ async fn unavailable_soft_key_events_and_stimuli_preserve_on_hook_state() {
                     stimulus: Stimulus::NewCall,
                     instance: 1,
                     call_reference: 0,
-                    status: 0,
+                    status: Some(0),
                 }
                 .encode(protocol)
                 .unwrap(),
@@ -1201,7 +1201,7 @@ async fn unavailable_soft_key_events_and_stimuli_preserve_on_hook_state() {
                 stimulus: Stimulus::Line,
                 instance: 1,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1330,7 +1330,7 @@ async fn assert_dedicated_messages_key_creates_an_exact_line_call(stimulus: Stim
                 // the captured 7965G reports instance zero.
                 instance: 0,
                 call_reference: 0,
-                status: 0,
+                status: Some(0),
             }
             .encode(protocol)
             .unwrap(),
@@ -1400,7 +1400,7 @@ async fn legacy_phone_receives_static_button_status_layouts() {
         .unwrap(),
         ClientMessage::FeatureStatusRequest {
             index: 1,
-            capabilities: 0,
+            capabilities: Some(0),
         }
         .encode(ProtocolVersion::V3)
         .unwrap(),
@@ -1484,4 +1484,95 @@ fn mwi_policy_projects_configured_cadence_and_on_call_visibility() {
         projected_mwi_lamp(visible_on_call, true, true),
         LampMode::Blink
     );
+}
+
+#[tokio::test]
+async fn v11_index_only_recording_requests_and_button_presses_reach_the_server() {
+    for features in [PhoneFeatures::empty(), PhoneFeatures::DYNAMIC_MESSAGES] {
+        let protocol = ProtocolVersion::V11;
+        let config = ServerConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            advertised_address: Ipv4Addr::LOCALHOST,
+            ..ServerConfig::default()
+        };
+        let (server, handle, mut events) = Server::bind(config, [recording_button_definition()])
+            .await
+            .unwrap();
+        let address = server.local_addr().unwrap();
+        let task = tokio::spawn(server.run());
+        let mut phone = TcpStream::connect(address).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        phone
+            .write_all(&register_bytes_for_device_with_features(
+                protocol,
+                DeviceType::Cisco7960.wire_value(),
+                "SEP001122334455",
+                features,
+            ))
+            .await
+            .unwrap();
+        read_until_message(&mut phone, &mut decoder, wire_id::CAPABILITIES_REQ).await;
+        assert!(matches!(
+            events.recv().await,
+            Some(Event::Device(DeviceEvent {
+                event: DeviceEventKind::Registered(_),
+                ..
+            }))
+        ));
+        // Independently constructed index-only SCCP frame, not a handset capture.
+        let mut request = Vec::new();
+        for word in [8u32, protocol.wire(), 0x0034, 1] {
+            request.extend_from_slice(&word.to_le_bytes());
+        }
+        phone.write_all(&request).await.unwrap();
+        let response_id = if features.is_empty() {
+            wire_id::FEATURE_STAT
+        } else {
+            wire_id::FEATURE_STAT_DYNAMIC
+        };
+        let frames = read_until_message(&mut phone, &mut decoder, response_id).await;
+        let frame = frames
+            .into_iter()
+            .find(|frame| frame.message_id == response_id)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(&ButtonType::Feature.wire_value().to_le_bytes());
+        let mut label = [0u8; 40];
+        label[..12].copy_from_slice(b"Record calls");
+        if features.is_empty() {
+            expected.extend_from_slice(&label);
+            expected.extend_from_slice(&0u32.to_le_bytes());
+        } else {
+            expected.extend_from_slice(&0u32.to_le_bytes());
+            expected.extend_from_slice(&label);
+            expected.resize(136, 0);
+        }
+        assert_eq!(frame.payload, expected);
+        assert_eq!(
+            ServerMessage::decode(frame, protocol).unwrap(),
+            ServerMessage::FeatureStatus {
+                instance: 1,
+                button_type: ButtonType::Feature,
+                label: "Record calls".into(),
+                state: 0,
+            }
+        );
+        // Captured 7960 Record calls stimulus: status word absent, header zero.
+        phone
+            .write_all(
+                &[16u32, 0, 5, 0x13, 1, 0]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap(),
+        Some(Event::Device(DeviceEvent { event: DeviceEventKind::RecordingButton { instance }, .. })) if instance == LineInstance(1))
+        );
+        handle.shutdown().await.unwrap();
+        task.await.unwrap().unwrap();
+    }
 }

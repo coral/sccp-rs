@@ -282,3 +282,87 @@ capture = "cisco_7961_party_same_no_ack_20260820"
 tcp_stream = 11
 outcome = "no_ack"
 step = [{ sequence = 1, fixture = "open_receive_7961_v22_no_ack_concrete_sanitized", frame_number = 152, timestamp_epoch = "1787249782.721509000", inventory_sequence = 56, wire_validity = "exact", handset_observation = "no_response" }]
+
+[[capture]]
+id = "feature_request_7960_v11_20260907"
+source_kind = "external_pcap"
+source_file = "scratch/2026-09-07-feature-status/baseline.pcap"
+source_sha256 = "9cdbda57a25477dfddd372b97c4c761eb9da650ab0a628c98363e0dbdfa27b58"
+captured_on = "2026-09-07"
+phone_model = "Cisco 7960G"
+firmware = "P0030801SR02"
+asterisk_version = "23.4.1"
+module_sha256 = "d1a2acc2fe155da97bdc06e8c4b7427b9a354d1c4c4df3bd2d0755434757e0d4"
+annotation = "minisrv registration with recording button; TCP payload reassembled by sequence, retransmissions removed. SCCP frame contains only index and optional capability bits; no sanitization required."
+outcome = "ui_failed"
+
+[[fixture]]
+name = "feature_request_7960_v11"
+file = "feature_request_7960_v11.hex"
+capture = "feature_request_7960_v11_20260907"
+direction = "device_to_server"
+message_id = 0x0034
+header_protocol = 0
+decode_protocol = 11
+contains = "frame"
+sha256 = "ada5f27377747d81dc5b68facc32d97486418989b67e273cd4d7553f264666d0"
+handset_observation = "emitted"
+extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 1, direction_ordinal = 18 }
+canonical_evidence = "implementation_output_only"
+normalization = [{ field = "header_protocol", captured = "0", canonical = "11", rationale = "Encoder uses negotiated session version", evidence = "Captured request has header zero while session negotiated v11" }]
+expect = { result = "decoded", canonical = "normalized", canonical_file = "feature_request_7960_v11_canonical.hex", semantic = { type = "feature_status_request", index = 1 } }
+
+[[capture]]
+id = "feature_request_7965_v22_20260907"
+source_kind = "external_pcap"
+source_file = "scratch/2026-09-07-feature-status/baseline.pcap"
+source_sha256 = "9cdbda57a25477dfddd372b97c4c761eb9da650ab0a628c98363e0dbdfa27b58"
+captured_on = "2026-09-07"
+phone_model = "Cisco 7965G"
+asterisk_version = "23.4.1"
+module_sha256 = "d1a2acc2fe155da97bdc06e8c4b7427b9a354d1c4c4df3bd2d0755434757e0d4"
+annotation = "minisrv registration with recording button; TCP payload reassembled by sequence, retransmissions removed. SCCP frame contains only index and optional capability bits; no sanitization required."
+outcome = "accepted"
+
+[[fixture]]
+name = "feature_request_7965_v22"
+file = "feature_request_7965_v22.hex"
+capture = "feature_request_7965_v22_20260907"
+direction = "device_to_server"
+message_id = 0x0034
+header_protocol = 22
+decode_protocol = 22
+contains = "frame"
+sha256 = "3f5187a8d4da8cb95f0d8599e582bf2cac257046722dc1e8046312263bc95a51"
+handset_observation = "emitted"
+extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 2, direction_ordinal = 12 }
+expect = { result = "decoded", canonical = "exact", semantic = { type = "feature_status_request", index = 1, capabilities = 0 } }
+
+[[capture]]
+id = "cisco_7960_buttons_20260907"
+source_kind = "external_pcap"
+source_file = "scratch/2026-09-07-feature-status/decoder-patched.pcap"
+source_sha256 = "aa5fad7adcdaa0055e58198d4a1bc39a4c91cba2d6a32c13cf8b6ece6592c4f0"
+captured_on = "2026-09-07"
+phone_model = "Cisco 7960G"
+firmware = "P0030801SR02"
+asterisk_version = "23.4.1"
+module_sha256 = "28a0f46d2348e2888e8e011bb8e83fe5bc13b46f35ca76adfc61bd240a49f037"
+annotation = "Feature-request decoder patched: user confirmed normal idle screen with Record calls, but side buttons unresponsive. Captured 12-byte events were rejected for missing status."
+outcome = "ui_failed"
+
+[[fixture]]
+name = "stimulus_7960_v11"
+file = "stimulus_7960_v11.hex"
+capture = "cisco_7960_buttons_20260907"
+direction = "device_to_server"
+message_id = 0x0005
+header_protocol = 0
+decode_protocol = 11
+contains = "frame"
+sha256 = "3f3a84309441136b353a5ed98c042c5758577b5aa4528e0be6f374937e1ba9e1"
+handset_observation = "emitted"
+extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 1, direction_ordinal = 23 }
+canonical_evidence = "implementation_output_only"
+normalization = [{ field = "header_protocol", captured = "0", canonical = "11", rationale = "Encoder uses negotiated session version", evidence = "Captured event has header zero while session negotiated v11" }]
+expect = { result = "decoded", canonical = "normalized", canonical_file = "stimulus_7960_v11_canonical.hex", semantic = { type = "stimulus", stimulus = 0x13, instance = 1, call_reference = 0 } }
