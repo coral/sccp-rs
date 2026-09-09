@@ -2,6 +2,22 @@ mod support;
 use support::{source, workspace_source};
 
 #[test]
+fn lifecycle_measurement_waits_for_cleanup_and_rejects_failed_diagnostics() {
+    let result = std::process::Command::new("sh")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ci/test-support/test-lifecycle-measurement.sh"
+        ))
+        .output()
+        .expect("run portable lifecycle measurement fixtures");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+#[test]
 fn live_bridge_gate_is_feature_scoped_and_separate_from_artifact_builds() {
     let manifest = source("Cargo.toml");
     let module = source("src/asterisk/mod.rs");
@@ -28,7 +44,11 @@ fn live_bridge_gate_is_feature_scoped_and_separate_from_artifact_builds() {
     assert!(workflow.contains(".dockerignore"));
     assert!(!workflow.contains("23.4.1"));
     assert!(workflow.contains("asterisk-module/ci/Dockerfile"));
-    assert!(workflow.contains("target: bridge-test"));
+    assert!(workflow.contains("target: bridge-test-build"));
+    assert!(workflow.contains("docker run --rm"));
+    assert!(workflow.contains("SCCP_LIFECYCLE_ARTIFACT_DIR=/diagnostics"));
+    assert!(workflow.contains("if: always()"));
+    assert!(workflow.contains("actions/upload-artifact@"));
 }
 
 #[test]

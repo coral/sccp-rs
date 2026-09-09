@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM scratch AS artifact
 COPY --from=artifact-build /output/ /
 
-FROM asterisk-live AS bridge-test
+FROM asterisk-live AS bridge-test-build
 
 ARG ASTERISK_FEATURE
 WORKDIR /workspace
@@ -104,10 +104,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/workspace/target \
     cargo build --locked --release -p asterisk-module --no-default-features \
         --features "${ASTERISK_FEATURE},live-asterisk-tests" \
-    && ASTERISK_BIN=/opt/asterisk-live/sbin/asterisk \
-        ASTERISK_MODULE_DIR=/opt/asterisk-live/lib/asterisk/modules \
-        ASTERISK_DATA_DIR=/opt/asterisk-live/var/lib/asterisk \
-        ./asterisk-module/ci/live-tests/test-bridges.sh target/release/libchan_sccp2.so
+    && cp target/release/libchan_sccp2.so /opt/chan_sccp2-test.so
+
+ENV ASTERISK_BIN=/opt/asterisk-live/sbin/asterisk
+ENV ASTERISK_MODULE_DIR=/opt/asterisk-live/lib/asterisk/modules
+ENV ASTERISK_DATA_DIR=/opt/asterisk-live/var/lib/asterisk
+CMD ["./asterisk-module/ci/live-tests/test-bridges.sh", "/opt/chan_sccp2-test.so"]
+
+FROM bridge-test-build AS bridge-test
+RUN ./asterisk-module/ci/live-tests/test-bridges.sh /opt/chan_sccp2-test.so
 
 FROM asterisk-live AS realtime-test
 

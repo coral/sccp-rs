@@ -3,6 +3,7 @@ set -eu
 
 module_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$module_dir/test-support/asterisk-sandbox.sh"
+. "$module_dir/test-support/lifecycle-measurement.sh"
 identity_verifier="$module_dir/../verify-loaded-module.sh"
 
 WARMUP_CYCLES=${SCCP_LIFECYCLE_WARMUP_CYCLES:-4}
@@ -59,6 +60,17 @@ asterisk_pid=
 diagnostics=
 asterisk_log=
 cli_log=
+baseline_fds=
+baseline_threads=
+
+export_diagnostics() {
+	[ -n "${SCCP_LIFECYCLE_ARTIFACT_DIR:-}" ] || return 0
+	mkdir -p "$SCCP_LIFECYCLE_ARTIFACT_DIR" || return 1
+	for diagnostic in "$diagnostics" "$cli_log" "$asterisk_log"; do
+		[ -f "$diagnostic" ] || continue
+		cp "$diagnostic" "$SCCP_LIFECYCLE_ARTIFACT_DIR/" || return 1
+	done
+}
 
 finish() {
 	status=$1
@@ -66,6 +78,12 @@ finish() {
 	sccp_sandbox_stop
 	if [ "$status" -ne 0 ]; then
 		sccp_sandbox_diagnostics "$diagnostics" "$cli_log" "$asterisk_log"
+	elif [ -f "$diagnostics" ]; then
+		cat "$diagnostics"
+	fi
+	if ! export_diagnostics; then
+		printf 'unable to preserve lifecycle diagnostics\n' >&2
+		status=1
 	fi
 	sccp_sandbox_cleanup
 	exit "$status"
@@ -265,6 +283,20 @@ record_metrics() {
 	printf '%s\t%s\t%s\t%s\n' "$label" "$fd_count" "$thread_count" "$rss_kb" >>"$diagnostics"
 }
 
+record_checkpoint() {
+	checkpoint_label=$1
+	settle_lifecycle_metrics "$checkpoint_label"
+	record_metrics "$checkpoint_label-before-trim"
+	printf '\n[%s-allocator] malloc trim\n' "$checkpoint_label" >>"$cli_log"
+	reclaim_lifecycle_free_heap >>"$cli_log"
+	settle_lifecycle_metrics "$checkpoint_label allocator cleanup"
+	if [ -n "$baseline_fds" ]; then
+		wait_for_metric_at_most fd "$baseline_fds" "$checkpoint_label"
+		wait_for_metric_at_most threads "$baseline_threads" "$checkpoint_label"
+	fi
+	record_metrics "$checkpoint_label"
+}
+
 wait_for_metric_at_most() {
 	metric_name=$1
 	maximum=$2
@@ -291,9 +323,9 @@ while [ "$cycle" -le "$WARMUP_CYCLES" ]; do
 	run_cycle "warmup-$cycle"
 	cycle=$((cycle + 1))
 done
-record_metrics warmup
-baseline_fds=$(metric fd)
-baseline_threads=$(metric threads)
+record_checkpoint warmup
+baseline_fds=$fd_count
+baseline_threads=$thread_count
 
 batch=1
 while [ "$batch" -le 3 ]; do
@@ -302,16 +334,14 @@ while [ "$batch" -le 3 ]; do
 		run_cycle "batch-$batch-$cycle"
 		cycle=$((cycle + 1))
 	done
-	record_metrics "batch-$batch"
-	wait_for_metric_at_most fd "$baseline_fds" "batch $batch"
-	wait_for_metric_at_most threads "$baseline_threads" "batch $batch"
+	record_checkpoint "batch-$batch"
 	if [ "$batch" -eq 2 ]; then
-		second_batch_rss=$(metric rss)
+		second_batch_rss=$rss_kb
 	fi
 	batch=$((batch + 1))
 done
 
-final_rss=$(metric rss)
+final_rss=$rss_kb
 maximum_final_rss=$((second_batch_rss + RSS_TOLERANCE_KB))
 if [ "$final_rss" -gt "$maximum_final_rss" ]; then
 	printf 'RSS grew from %s KiB after batch 2 to %s KiB after batch 3 (limit +%s KiB)\n' \

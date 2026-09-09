@@ -64,12 +64,13 @@ jobs:
           ref=$(./asterisk-module/ci/resolve-asterisk-ref.sh "${{ matrix.lane }}")
           printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
 
-      - name: Exercise live channel and bridge ownership
+      - name: Build live bridge test image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: asterisk-module/ci/Dockerfile
-          target: bridge-test
+          target: bridge-test-build
+          tags: sccp-bridge-test:${{ matrix.lane }}
           build-args: |
             ASTERISK_REF=${{ steps.asterisk.outputs.ref }}
             ASTERISK_FEATURE=${{ matrix.feature }}
@@ -77,3 +78,20 @@ jobs:
           cache-to: type=gha,mode=max,scope=asterisk-ci-${{ steps.asterisk.outputs.ref }}
           pull: true
           push: false
+          load: true
+
+      - name: Exercise live channel and bridge ownership
+        run: |
+          mkdir -p "$RUNNER_TEMP/bridge-diagnostics"
+          docker run --rm \
+            -v "$RUNNER_TEMP/bridge-diagnostics:/diagnostics" \
+            -e SCCP_LIFECYCLE_ARTIFACT_DIR=/diagnostics \
+            sccp-bridge-test:${{ matrix.lane }}
+
+      - name: Preserve lifecycle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-lifecycle-${{ matrix.lane }}
+          path: ${{ runner.temp }}/bridge-diagnostics/
+          if-no-files-found: warn
