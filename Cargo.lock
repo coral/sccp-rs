@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "asterisk-module"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "base64",
  "bindgen",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "sccp-protocol"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "binrw",
  "bitflags",
