@@ -16,6 +16,8 @@ categories = ["network-programming", "encoding", "parser-implementations"]
 workspace = true
 
 [dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true
 binrw.workspace = true
 bitflags.workspace = true
 form_urlencoded.workspace = true

@@ -2064,9 +2064,75 @@ fn calendar_conversion_is_stable() {
             minute: 15,
             second: 0,
             milliseconds: 0,
-            unix_seconds: 87_300,
+            unix_seconds: 85_500,
         }
     );
+}
+
+#[test]
+fn station_calendar_follows_named_zone_transitions_without_shifting_the_utc_epoch() {
+    for (instant, zone, month, day, weekday, hour, minute, second) in [
+        (
+            "2026-03-08T09:59:59Z",
+            "America/Los_Angeles",
+            3,
+            8,
+            1,
+            1,
+            59,
+            59,
+        ),
+        (
+            "2026-03-08T10:00:00Z",
+            "America/Los_Angeles",
+            3,
+            8,
+            1,
+            3,
+            0,
+            0,
+        ),
+        (
+            "2026-11-01T08:30:00Z",
+            "America/Los_Angeles",
+            11,
+            1,
+            1,
+            1,
+            30,
+            0,
+        ),
+        (
+            "2026-11-01T09:30:00Z",
+            "America/Los_Angeles",
+            11,
+            1,
+            1,
+            1,
+            30,
+            0,
+        ),
+        ("2026-01-01T00:00:00Z", "Asia/Kathmandu", 1, 1, 5, 5, 45, 0),
+        ("2026-06-01T00:00:00Z", "Europe/Stockholm", 6, 1, 2, 2, 0, 0),
+    ] {
+        let instant: chrono::DateTime<chrono::Utc> = instant.parse().unwrap();
+        let unix_seconds = u32::try_from(instant.timestamp()).unwrap();
+        assert_eq!(
+            time_date_message_in_zone_at(instant.into(), 0, Some(zone.parse().unwrap())),
+            ServerMessage::TimeDate {
+                year: 2026,
+                month,
+                day,
+                weekday,
+                hour,
+                minute,
+                second,
+                milliseconds: 0,
+                unix_seconds,
+            },
+            "{zone} at {instant}",
+        );
+    }
 }
 
 #[test]

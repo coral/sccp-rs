@@ -43,6 +43,7 @@ telemetry = [
 live-asterisk-tests = []
 
 [dependencies]
+chrono.workspace = true
 sccp-protocol = { path = "../sccp-protocol" }
 base64 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }

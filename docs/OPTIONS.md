@@ -26,7 +26,7 @@ keys reject the complete configuration.
 - Reload is transactional. These changes require a module restart:
   `configuration_source`, clear/TLS listeners, advertised/network/ACL/NAT
   policy, QoS, `keepalive`, `secondary_keepalive`, `server_name`, signaling
-  failover, realtime table selection, and dial-terminator policy.
+  failover, realtime table selection, `timezone`/`tzoffset`, and dial-terminator policy.
 - There is no generic CLI `set` command. CLI-settable runtime state is listed
   under [CLI overrides](#cli-overrides); every other option is changed at its
   configuration source and then reloaded/restarted.
@@ -156,7 +156,8 @@ Each row is `canonical key | default | accepted / effect`.
 | `transfer_on_hangup` | `no` | `bool`; handset hangup completes an eligible attended transfer. |
 | `call_answer_order` | `OldestFirst` | `OldestFirst|LastFirst`. |
 | `dateformat` | `D/M/Y` | Exactly `D`, `M`, and `Y|YY`, each once, with two `/|.|-|space` separators; optional trailing `A` selects 12-hour clock; <=7 bytes. |
-| `tzoffset` | `0` | Whole UTC offset hours `-14..14`; affects phone display, not DND schedule timezone. |
+| `tzoffset` | `0` | Whole UTC offset hours `-14..14`; affects phone display, not DND schedule timezone. Mutually exclusive with `timezone`; changes require a module restart. |
+| `timezone` | unset | IANA timezone, e.g. `America/Los_Angeles`, for phone calendar fields and DND scheduling, including DST. Mutually exclusive with `tzoffset`; changes require a module restart. |
 | `ring_type` | `Outside` | `Off|Inside|Outside|Feature|Silent|Urgent|Bellcore1..Bellcore5`. |
 | `call_waiting_tone` | `CallWaiting` | `tone`; numeric `0` disables it. |
 | `call_waiting_interval` | `0` | Repeat seconds `0..86400`; `0` means initial tone only. |
@@ -212,7 +213,7 @@ inheritance and before durable CLI/handset state is restored.
 | `forward_no_answer` | unset | Same. |
 | `dnd_feature` | `yes` | `bool`; enable manual DND UI/control. Does not disable schedules. |
 | `dnd` | `off` | Initial `off|silent|reject`; aliases `none|disabled` -> off, `busy` -> reject. |
-| `dnd_schedule` (R) | none | `HH:MM-HH:MM, DAYS, silent|reject`; <=32 entries, <=128 bytes each, no weekly overlap. `DAYS=*|mon..sun|RANGE`, joined with `&`; ranges may wrap. Start inclusive, end exclusive; `24:00` only as end; server local timezone. Sole `none` clears inherited list. |
+| `dnd_schedule` (R) | none | `HH:MM-HH:MM, DAYS, silent|reject`; <=32 entries, <=128 bytes each, no weekly overlap. `DAYS=*|mon..sun|RANGE`, joined with `&`; ranges may wrap. Start inclusive, end exclusive; `24:00` only as end; general `timezone` or server local timezone when unset. Sole `none` clears inherited list. |
 | `background_image_dynamic` | no | When enabled, `background_image_url` is a case-sensitive pattern requiring `{W}` and `{H}` and optionally using `{FORMAT}` and `{B}`; the registered phone model supplies full-size and thumbnail values, with `{FORMAT}` resolving to `png` or `xml`. |
 | `background_image_url` | unset | Absolute `http://` or `https://` URL, <=256 characters, valid `%HH` escapes, no credentials/fragment/whitespace/control/backslash; `empty|none|off|disabled` clears. In dynamic mode this is the URL pattern. The image/thumbnail pair must fit the phone XML control document. |
 | `background_thumbnail_url` | unset; derived when an image is set | Same URL grammar; invalid without image URL and forbidden in dynamic mode. Empty clears the explicit thumbnail and derives one by inserting `_thumb` before the extension/query; a URL with no filename needs an explicit thumbnail. |

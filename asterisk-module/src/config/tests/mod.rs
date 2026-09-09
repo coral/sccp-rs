@@ -38,6 +38,7 @@ fn general_policy_views_use_runtime_duration_types_without_changing_defaults() {
         general.station_policy(),
         GeneralStationPolicy {
             timezone_offset_minutes: 0,
+            timezone: None,
             date_template: DateTemplate::default(),
             ring_type: RingerMode::Outside,
             call_waiting_tone: Some(Tone::CallWaiting),
@@ -493,6 +494,26 @@ fn station_calendar_policy_is_typed_and_bounded() {
             &format!("advertised_address = 192.0.2.10\n        {setting}"),
         );
         assert!(ModuleConfig::parse(&input).is_err(), "accepted {setting}");
+    }
+}
+
+#[test]
+fn named_timezone_rejects_unknown_duplicate_and_conflicting_settings() {
+    let input = |settings: &str| CONFIG.replace("[general]", &format!("[general]\n{settings}"));
+    let parsed = ModuleConfig::parse(&input("timezone = America/Los_Angeles")).unwrap();
+    assert_eq!(
+        parsed.general.timezone,
+        Some("America/Los_Angeles".parse().unwrap())
+    );
+    assert_eq!(parsed.general.timezone_offset_minutes, 0);
+    for settings in [
+        "timezone = Invalid/Zone",
+        "timezone =",
+        "timezone = UTC\ntimezone = America/Los_Angeles",
+        "timezone = America/Los_Angeles\ntzoffset = 0",
+        "tzoffset = -8\ntimezone = America/Los_Angeles",
+    ] {
+        assert!(ModuleConfig::parse(&input(settings)).is_err(), "{settings}");
     }
 }
 

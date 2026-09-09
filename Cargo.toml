@@ -24,6 +24,8 @@ clone_on_ref_ptr = "warn"
 redundant_clone = "warn"
 
 [workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
 base64 = "0.23"
 binrw = "0.15"
 bitflags = "2"

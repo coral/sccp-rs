@@ -263,22 +263,38 @@ macro_rules! id_newtype {
     };
 }
 
-id_newtype!(/// A line or button instance on a station.
-    LineInstance);
-id_newtype!(/// A device-visible call reference.
-    CallReference);
-id_newtype!(/// A media passthrough-party identifier.
-    PassthroughPartyId);
-id_newtype!(/// A stable identifier for one device's appearance of a logical line.
-    AppearanceId);
-id_newtype!(/// A conference identifier.
-    ConferenceId);
-id_newtype!(/// A stable identifier for a participant in a conference.
-    ParticipantId);
-id_newtype!(/// An SCCP application identifier.
-    ApplicationId);
-id_newtype!(/// An application transaction identifier.
-    TransactionId);
+id_newtype!(
+    /// A line or button instance on a station.
+    LineInstance
+);
+id_newtype!(
+    /// A device-visible call reference.
+    CallReference
+);
+id_newtype!(
+    /// A media passthrough-party identifier.
+    PassthroughPartyId
+);
+id_newtype!(
+    /// A stable identifier for one device's appearance of a logical line.
+    AppearanceId
+);
+id_newtype!(
+    /// A conference identifier.
+    ConferenceId
+);
+id_newtype!(
+    /// A stable identifier for a participant in a conference.
+    ParticipantId
+);
+id_newtype!(
+    /// An SCCP application identifier.
+    ApplicationId
+);
+id_newtype!(
+    /// An application transaction identifier.
+    TransactionId
+);
 
 /// ECN-zeroed traffic-class octet carried by station media commands.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]

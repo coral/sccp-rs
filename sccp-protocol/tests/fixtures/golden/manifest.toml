@@ -307,7 +307,8 @@ decode_protocol = 11
 contains = "frame"
 sha256 = "ada5f27377747d81dc5b68facc32d97486418989b67e273cd4d7553f264666d0"
 handset_observation = "emitted"
-extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 1, direction_ordinal = 18 }
+# Byte-exact replay of the original Python extraction (payload-only connection 1).
+extraction = { tool = "sccp_fixtures_tshark", version = 1, tcp_stream = 2, direction_ordinal = 18 }
 canonical_evidence = "implementation_output_only"
 normalization = [{ field = "header_protocol", captured = "0", canonical = "11", rationale = "Encoder uses negotiated session version", evidence = "Captured request has header zero while session negotiated v11" }]
 expect = { result = "decoded", canonical = "normalized", canonical_file = "feature_request_7960_v11_canonical.hex", semantic = { type = "feature_status_request", index = 1 } }
@@ -335,7 +336,8 @@ decode_protocol = 22
 contains = "frame"
 sha256 = "3f5187a8d4da8cb95f0d8599e582bf2cac257046722dc1e8046312263bc95a51"
 handset_observation = "emitted"
-extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 2, direction_ordinal = 12 }
+# Byte-exact replay of the original Python extraction (payload-only connection 2).
+extraction = { tool = "sccp_fixtures_tshark", version = 1, tcp_stream = 12, direction_ordinal = 12 }
 expect = { result = "decoded", canonical = "exact", semantic = { type = "feature_status_request", index = 1, capabilities = 0 } }
 
 [[capture]]
@@ -362,7 +364,8 @@ decode_protocol = 11
 contains = "frame"
 sha256 = "3f3a84309441136b353a5ed98c042c5758577b5aa4528e0be6f374937e1ba9e1"
 handset_observation = "emitted"
-extraction = { tool = "python_tcp_reassembly", version = 1, tcp_stream = 1, direction_ordinal = 23 }
+# Byte-exact replay of the original Python extraction (payload-only connection 1).
+extraction = { tool = "sccp_fixtures_tshark", version = 1, tcp_stream = 15, direction_ordinal = 23 }
 canonical_evidence = "implementation_output_only"
 normalization = [{ field = "header_protocol", captured = "0", canonical = "11", rationale = "Encoder uses negotiated session version", evidence = "Captured event has header zero while session negotiated v11" }]
 expect = { result = "decoded", canonical = "normalized", canonical_file = "stimulus_7960_v11_canonical.hex", semantic = { type = "stimulus", stimulus = 0x13, instance = 1, call_reference = 0 } }

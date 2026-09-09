@@ -444,6 +444,7 @@ impl Module {
             record_dial_terminator: config.general.dial_terminator.record,
             call_answer_order: config.general.call_answer_order.into(),
             timezone_offset_minutes: config.general.timezone_offset_minutes,
+            timezone: config.general.timezone,
             date_template: config.general.date_template.clone(),
             anonymous_hotline: anonymous_hotline_definition(&config)?,
         };

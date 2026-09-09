@@ -38,11 +38,15 @@ macro_rules! backend_id {
     };
 }
 
-backend_id!(/// Driver-owned identity for a PBX channel.
-    PbxCallId);
+backend_id!(
+    /// Driver-owned identity for a PBX channel.
+    PbxCallId
+);
 
-backend_id!(/// Driver-owned identity for a backend bridge, independent of PBX pointers and names.
-    PbxBridgeId);
+backend_id!(
+    /// Driver-owned identity for a backend bridge, independent of PBX pointers and names.
+    PbxBridgeId
+);
 
 /// One configured request to run a PBX-hosted conference application for an
 /// already-created outbound channel. The application name is deliberately not

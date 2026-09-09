@@ -139,6 +139,7 @@ impl GeneralConfig {
     pub fn station_policy(&self) -> GeneralStationPolicy {
         GeneralStationPolicy {
             timezone_offset_minutes: self.timezone_offset_minutes,
+            timezone: self.timezone,
             date_template: self.date_template.clone(),
             ring_type: self.ring_type,
             call_waiting_tone: self.call_waiting_tone,
@@ -314,6 +315,9 @@ enum GeneralOption {
     /// Sets the station clock offset from server time.
     /// Applies the configured offset in minutes to SCCP time updates.
     TimezoneOffset,
+    /// IANA timezone for station calendar fields and DND scheduling.
+    /// Includes DST transitions; mutually exclusive with tzoffset. Changes require restart.
+    Timezone,
     #[serde(alias = "clearbind")]
     /// Sets the combined SCCP listener endpoint.
     /// Configures the address and port used for unencrypted signaling.
@@ -1142,6 +1146,7 @@ struct GeneralSectionDraft<'a> {
     configuration_source: Option<ConfigurationSource>,
     call_answer_order: Option<CallAnswerOrder>,
     timezone_offset_minutes: Option<i16>,
+    timezone: Option<sccp_protocol::TimeZone>,
     date_template: Option<DateTemplate>,
     ring_type: Option<RingerMode>,
     call_waiting_tone: Option<Option<Tone>>,

@@ -186,6 +186,7 @@ fn general_snapshot(general: &GeneralConfig) -> Value {
         "transfer_on_hangup": general.transfer_on_hangup,
         "call_answer_order": format!("{:?}", general.call_answer_order),
         "timezone_offset_minutes": general.timezone_offset_minutes,
+        "timezone": general.timezone.map(|zone| zone.name()),
         "date_template": format!("{:?}", general.date_template),
         "ring_type": format!("{:?}", general.ring_type),
         "call_waiting_tone": format!("{:?}", general.call_waiting_tone),

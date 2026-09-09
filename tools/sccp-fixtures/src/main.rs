@@ -758,6 +758,19 @@ fn sanitize(
 ) -> Result<(Vec<u8>, Vec<&'static str>), String> {
     match privacy_class(frame.message_id) {
         PrivacyClass::Safe => Ok((original, Vec::new())),
+        PrivacyClass::NumericControl => {
+            if direction != Direction::DeviceToServer {
+                return Err("numeric station control has the wrong direction".into());
+            }
+            match ClientMessage::decode_with_version(frame, protocol)
+                .map_err(|error| format!("invalid numeric station control: {error}"))?
+            {
+                ClientMessage::FeatureStatusRequest { .. } | ClientMessage::Stimulus { .. } => {
+                    Ok((original, Vec::new()))
+                }
+                _ => Err("frame is not an approved numeric station control".into()),
+            }
+        }
         PrivacyClass::Network if network_is_wildcard(direction, &frame, protocol)? => {
             Ok((original, Vec::new()))
         }
@@ -827,6 +840,7 @@ fn sanitize(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PrivacyClass {
     Safe,
+    NumericControl,
     Network,
     Station,
     Sensitive,
@@ -834,6 +848,7 @@ enum PrivacyClass {
 
 fn privacy_class(message_id: u32) -> PrivacyClass {
     match MessageId::from(message_id) {
+        MessageId::FeatureStatusRequest | MessageId::Stimulus => PrivacyClass::NumericControl,
         MessageId::KeepAlive
         | MessageId::OffHook
         | MessageId::OnHook
@@ -1074,6 +1089,64 @@ mod tests {
             privacy_class(MessageId::UserToDeviceDataV1.wire_value()),
             PrivacyClass::Sensitive
         );
+    }
+
+    #[test]
+    fn numeric_control_import_preserves_captured_bytes_and_rejects_unmodeled_payloads() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sccp-protocol/tests/fixtures/golden");
+        for (file, protocol) in [
+            ("feature_request_7960_v11.hex", ProtocolVersion::V11),
+            ("feature_request_7965_v22.hex", ProtocolVersion::V22),
+            ("stimulus_7960_v11.hex", ProtocolVersion::V11),
+        ] {
+            let bytes = read_hex_file(&fixture_root.join(file));
+            let frame = frames(&Node {
+                endpoint: String::new(),
+                bytes: bytes.clone(),
+            })
+            .unwrap()
+            .remove(0)
+            .0;
+            assert_eq!(
+                sanitize(
+                    Direction::DeviceToServer,
+                    frame.clone(),
+                    bytes.clone(),
+                    protocol,
+                    false,
+                    false
+                )
+                .unwrap(),
+                (bytes.clone(), vec![]),
+                "{file}",
+            );
+            assert!(
+                sanitize(
+                    Direction::ServerToDevice,
+                    frame.clone(),
+                    bytes,
+                    protocol,
+                    false,
+                    false
+                )
+                .is_err()
+            );
+            let mut malformed = frame;
+            malformed.payload.push(0);
+            let bytes = malformed.encode().unwrap();
+            assert!(
+                sanitize(
+                    Direction::DeviceToServer,
+                    malformed,
+                    bytes,
+                    protocol,
+                    false,
+                    false
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

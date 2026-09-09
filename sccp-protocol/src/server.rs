@@ -379,6 +379,9 @@ pub struct ServerConfig {
     /// Fixed station wall-clock offset from UTC. SCCP does not carry a named
     /// timezone or daylight-saving transition table.
     pub timezone_offset_minutes: i16,
+    /// IANA zone for calendar fields; overrides the legacy fixed offset.
+    /// Unix seconds always remain UTC, regardless of this setting.
+    pub timezone: Option<crate::TimeZone>,
     pub date_template: crate::types::DateTemplate,
     /// Optional policy-neutral station template for an otherwise unknown
     /// guest-hotline registration. The dial destination remains owned by the
@@ -675,6 +678,7 @@ impl Default for ServerConfig {
             record_dial_terminator: false,
             call_answer_order: CallSelectionOrder::OldestFirst,
             timezone_offset_minutes: 0,
+            timezone: None,
             date_template: Default::default(),
             anonymous_hotline: None,
         }
@@ -4286,7 +4290,12 @@ async fn handle_client_message(
     let protocol = state.registration.protocol;
     match message {
         ClientMessage::KeepAlive => {
-            send_message(stream, &ServerMessage::KeepAliveAck, protocol).await?
+            send_message(stream, &ServerMessage::KeepAliveAck, protocol).await?;
+            // Refresh idle legacy clocks across DST changes without requiring
+            // a call, a station time request, or a server restart.
+            if context.config.timezone.is_some() {
+                send_message(stream, &time_date_message(&context.config), protocol).await?;
+            }
         }
         ClientMessage::CapabilitiesResponse(capabilities) => {
             let capabilities = StationMediaCapabilities::from(capabilities);
@@ -4365,12 +4374,7 @@ async fn handle_client_message(
             .await?;
         }
         ClientMessage::TimeDateRequest => {
-            send_message(
-                stream,
-                &time_date_message(context.config.timezone_offset_minutes),
-                protocol,
-            )
-            .await?
+            send_message(stream, &time_date_message(&context.config), protocol).await?
         }
         ClientMessage::SoftKeyTemplateRequest => {
             send_message(
@@ -6017,7 +6021,7 @@ async fn complete_on_hook(
         &call,
         &state.device.soft_keys,
         state.registration.protocol,
-        context.config.timezone_offset_minutes,
+        &context.config,
         stop_ringer,
     )
     .await?;
@@ -8917,7 +8921,7 @@ async fn handle_session_command(
                                 &call,
                                 &state.device.soft_keys,
                                 protocol,
-                                context.config.timezone_offset_minutes,
+                                &context.config,
                                 stop_ringer,
                             )
                             .await?;
@@ -10784,7 +10788,7 @@ async fn close_call_messages(
     call: &SessionCall,
     soft_keys: &SoftKeyProfile,
     protocol: ProtocolVersion,
-    timezone_offset_minutes: i16,
+    config: &ServerConfig,
     stop_ringer: bool,
 ) -> Result<(), ServerError> {
     send_message(
@@ -10836,12 +10840,7 @@ async fn close_call_messages(
         protocol,
     )
     .await?;
-    send_message(
-        stream,
-        &time_date_message(timezone_offset_minutes),
-        protocol,
-    )
-    .await?;
+    send_message(stream, &time_date_message(config), protocol).await?;
     send_message(
         stream,
         &ServerMessage::SetSpeakerMode(SpeakerMode::Off),
@@ -10864,27 +10863,54 @@ async fn close_call_messages(
     Ok(())
 }
 
-fn time_date_message(timezone_offset_minutes: i16) -> ServerMessage {
-    time_date_message_at(SystemTime::now(), timezone_offset_minutes)
+fn time_date_message(config: &ServerConfig) -> ServerMessage {
+    time_date_message_in_zone_at(
+        SystemTime::now(),
+        config.timezone_offset_minutes,
+        config.timezone,
+    )
 }
 
+#[cfg(test)]
 fn time_date_message_at(now: SystemTime, timezone_offset_minutes: i16) -> ServerMessage {
-    let unix = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let local = (unix as i128 + i128::from(timezone_offset_minutes) * 60)
-        .clamp(0, i128::from(u32::MAX)) as u64;
-    let days = (local / 86_400) as i64;
-    let seconds = local % 86_400;
+    time_date_message_in_zone_at(now, timezone_offset_minutes, None)
+}
+
+fn time_date_message_in_zone_at(
+    now: SystemTime,
+    timezone_offset_minutes: i16,
+    timezone: Option<crate::TimeZone>,
+) -> ServerMessage {
+    use chrono::{Offset, TimeZone};
+    let unix = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .min(u64::from(u32::MAX));
+    let offset = timezone.map_or(i32::from(timezone_offset_minutes) * 60, |zone| {
+        zone.timestamp_opt(unix as i64, 0)
+            .single()
+            .expect("u32 Unix timestamp is within chrono's supported range")
+            .offset()
+            .fix()
+            .local_minus_utc()
+    });
+    let local = unix as i64 + i64::from(offset);
+    let days = local.div_euclid(86_400);
+    let seconds = local.rem_euclid(86_400) as u32;
     let (year, month, day) = civil_from_days(days);
     ServerMessage::TimeDate {
         year: year as u32,
         month,
         weekday: ((days + 4).rem_euclid(7) + 1) as u32,
         day,
-        hour: (seconds / 3600) as u32,
-        minute: ((seconds % 3600) / 60) as u32,
-        second: (seconds % 60) as u32,
+        hour: seconds / 3600,
+        minute: (seconds % 3600) / 60,
+        second: seconds % 60,
         milliseconds: 0,
-        unix_seconds: local as u32,
+        // 7960 uses the calendar fields; 7965 applies its SEP timezone to
+        // this epoch. Shifting the epoch too applies the offset twice.
+        unix_seconds: unix as u32,
     }
 }
 

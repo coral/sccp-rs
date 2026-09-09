@@ -75,6 +75,9 @@ pub mod qos;
 pub mod server;
 pub mod types;
 
+/// Validated IANA timezone used for station wall-clock fields (including DST).
+pub use chrono_tz::Tz as TimeZone;
+
 pub use message::capabilities::{
     CapabilityUpdate, CapabilityUpdateVariant, ConferenceResource, ConferenceServiceResource,
     CustomPictureFormat, DataCapability, StationMediaCapabilities, VideoCapability,

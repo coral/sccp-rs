@@ -7,8 +7,9 @@
 //! are ordered deterministically.
 //!
 //! Bind/advertised addresses, keepalive, server identity, listener/TLS policy,
-//! ACL/NAT/network policy, QoS, realtime families, and dial-terminator policy
-//! are restart-only. The runtime rejects such a reload before applying effects.
+//! ACL/NAT/network policy, QoS, realtime families, station timezone, and
+//! dial-terminator policy are restart-only. The runtime rejects such a reload
+//! before applying effects.
 //! For an accepted reload it stages configuration, feature overlays, MWI and
 //! server reconfiguration, rolls staged resources back on pre-commit failure,
 //! and publishes the new snapshot only after all required steps succeed.
@@ -273,6 +274,7 @@ pub(crate) enum RestartRequiredChange {
     QosPolicy,
     RealtimeTables,
     DialTerminator,
+    Timezone,
 }
 
 impl RestartRequiredChange {
@@ -289,6 +291,7 @@ impl RestartRequiredChange {
             Self::QosPolicy => "QoS policy",
             Self::RealtimeTables => "realtime table selection",
             Self::DialTerminator => "dial terminator policy",
+            Self::Timezone => "timezone/tzoffset",
         }
     }
 }
@@ -448,6 +451,11 @@ fn restart_required_changes(
     }
     if previous.general.dial_terminator != next.general.dial_terminator {
         changes.push(RestartRequiredChange::DialTerminator);
+    }
+    if previous.general.timezone != next.general.timezone
+        || previous.general.timezone_offset_minutes != next.general.timezone_offset_minutes
+    {
+        changes.push(RestartRequiredChange::Timezone);
     }
     changes
 }
@@ -915,6 +923,32 @@ mod tests {
             [RestartRequiredChange::ServerName]
         );
         assert_eq!(RestartRequiredChange::ServerName.name(), "server_name");
+    }
+
+    #[test]
+    fn timezone_changes_require_restart_before_phone_and_schedule_policies_can_diverge() {
+        let configurations = [
+            "",
+            "tzoffset = -8",
+            "timezone = America/Los_Angeles",
+            "timezone = Europe/Stockholm",
+        ];
+        for (previous_index, previous) in configurations.iter().enumerate() {
+            for (next_index, next) in configurations.iter().enumerate() {
+                let previous = two_devices(previous, "");
+                let next = two_devices(next, "");
+                let plan = ReloadPlan::build(&previous, &next);
+                assert_eq!(
+                    plan.restart_required,
+                    if previous_index == next_index {
+                        vec![]
+                    } else {
+                        vec![RestartRequiredChange::Timezone]
+                    },
+                );
+                assert!(plan.affected_devices().next().is_none());
+            }
+        }
     }
 
     #[test]

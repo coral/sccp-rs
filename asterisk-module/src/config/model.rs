@@ -29,6 +29,8 @@ pub struct GeneralConfig {
     pub call_answer_order: CallAnswerOrder,
     /// Fixed SCCP station wall-clock offset from UTC.
     pub timezone_offset_minutes: i16,
+    /// Named timezone for station calendar fields and DND scheduling.
+    pub timezone: Option<sccp_protocol::TimeZone>,
     /// SCCP station date-field order and separator.
     pub date_template: DateTemplate,
     /// Default physical ringer for ordinary inbound presentations.
@@ -225,6 +227,7 @@ pub struct GeneralTimingPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneralStationPolicy {
     pub timezone_offset_minutes: i16,
+    pub timezone: Option<sccp_protocol::TimeZone>,
     pub date_template: DateTemplate,
     pub ring_type: RingerMode,
     pub call_waiting_tone: Option<Tone>,

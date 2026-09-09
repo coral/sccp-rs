@@ -49,6 +49,9 @@ server_name = Asterisk SCCP
 ; alphabet; `tzoffset` is whole hours from UTC in the range -14..14.
 dateformat = D/M/Y
 tzoffset = 0
+; For automatic DST in both phone clocks and DND schedules, replace tzoffset
+; with an IANA timezone. Changes to either setting require a module restart.
+; timezone = America/Los_Angeles
 ; Lines inherit the PBX language and optional CDR account code.
 language = en
 accountcode = voice-default

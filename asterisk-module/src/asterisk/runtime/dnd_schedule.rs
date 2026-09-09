@@ -70,6 +70,8 @@ impl DndSchedulePhase {
 struct CompiledDndRule {
     mode: DndScheduleMode,
     timings: Vec<Arc<AsteriskTiming>>,
+    schedule: DndSchedule,
+    timezone: Option<sccp_protocol::TimeZone>,
 }
 
 impl CompiledDndRule {
@@ -87,16 +89,22 @@ impl CompiledDndRule {
         Ok(Self {
             mode: schedule.mode(),
             timings,
+            schedule: schedule.clone(),
+            timezone: None,
         })
     }
 
     fn matches_now(&self) -> bool {
+        if let Some(zone) = self.timezone {
+            return self.schedule.matches_at(std::time::SystemTime::now(), zone);
+        }
         self.timings.iter().any(|timing| timing.matches_now())
     }
 }
 
 #[derive(Clone)]
 struct DeviceDndSchedule {
+    timezone: Option<sccp_protocol::TimeZone>,
     source: DndScheduleSource,
     rules: Vec<DndSchedule>,
     compiled: Vec<CompiledDndRule>,
@@ -109,14 +117,19 @@ impl DeviceDndSchedule {
     fn compile(
         source: DndScheduleSource,
         rules: Vec<DndSchedule>,
+        timezone: Option<sccp_protocol::TimeZone>,
     ) -> Result<Self, DeviceDndScheduleError> {
         validate_dnd_schedules(&rules)?;
-        let compiled = rules
+        let mut compiled = rules
             .iter()
             .map(CompiledDndRule::new)
             .collect::<Result<Vec<_>, _>>()?;
         let pending_catchup = !rules.is_empty();
+        for rule in &mut compiled {
+            rule.timezone = timezone;
+        }
         Ok(Self {
+            timezone,
             source,
             rules,
             compiled,
@@ -157,12 +170,11 @@ impl DndScheduleRegistry {
                     device.dnd_schedules.clone(),
                 ),
             };
-            let schedule = DeviceDndSchedule::compile(source, rules).map_err(|source| {
-                DndScheduleRegistryError::InvalidSchedule {
+            let schedule = DeviceDndSchedule::compile(source, rules, config.general.timezone)
+                .map_err(|source| DndScheduleRegistryError::InvalidSchedule {
                     device: device_id.clone(),
                     source,
-                }
-            })?;
+                })?;
             devices.insert(device_id.clone(), schedule);
         }
         Ok(Self { devices })
@@ -178,6 +190,7 @@ impl DndScheduleRegistry {
             let schedule = DeviceDndSchedule::compile(
                 DndScheduleSource::Configuration,
                 device.dnd_schedules.clone(),
+                config.general.timezone,
             )
             .map_err(|source| DndScheduleRegistryError::InvalidSchedule {
                 device: device_id.clone(),
@@ -190,6 +203,7 @@ impl DndScheduleRegistry {
 
     fn reconcile_live_ownership(&mut self, configured: &Self, live: &Self) {
         for (device, candidate) in &mut self.devices {
+            let timezone = candidate.timezone;
             let Some(current) = live.devices.get(device) else {
                 continue;
             };
@@ -199,7 +213,17 @@ impl DndScheduleRegistry {
                         *candidate = configured.clone();
                     }
                 }
-                DndScheduleSource::Override => *candidate = current.clone(),
+                DndScheduleSource::Override => {
+                    *candidate = current.clone();
+                    if candidate.timezone != timezone {
+                        candidate.timezone = timezone;
+                        for rule in &mut candidate.compiled {
+                            rule.timezone = timezone;
+                        }
+                        candidate.last_phase = None;
+                        candidate.pending_catchup |= !candidate.rules.is_empty();
+                    }
+                }
             }
         }
         self.preserve_unchanged_phases(live);
@@ -210,7 +234,7 @@ impl DndScheduleRegistry {
             let Some(old) = previous.devices.get(device) else {
                 continue;
             };
-            if old.rules == current.rules {
+            if old.rules == current.rules && old.timezone == current.timezone {
                 current.last_phase = old.last_phase;
                 current.pending_catchup = old.pending_catchup;
                 current.last_failure_warning = old.last_failure_warning;
@@ -739,7 +763,7 @@ fn mutate_schedule(
     } else {
         DndScheduleSource::Override
     };
-    let next = match DeviceDndSchedule::compile(next_source, rules) {
+    let next = match DeviceDndSchedule::compile(next_source, rules, config.general.timezone) {
         Ok(next) => next,
         Err(error) => return format!("DND schedule command failed: {error}\n"),
     };

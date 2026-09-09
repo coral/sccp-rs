@@ -2,7 +2,10 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::time::SystemTime;
 
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use sccp_protocol::TimeZone;
 use thiserror::Error;
 
 pub const MAX_DND_SCHEDULES: usize = 32;
@@ -261,6 +264,21 @@ pub struct DndSchedule {
 }
 
 impl DndSchedule {
+    /// Evaluate a UTC instant in an explicit zone, independent of host TZ.
+    /// Spring's missing minutes are skipped; fall's repeated minutes match
+    /// on both occurrences, just like a local wall-clock schedule.
+    pub fn matches_at(&self, now: SystemTime, timezone: TimeZone) -> bool {
+        let utc: DateTime<Utc> = now.into();
+        let local = utc.with_timezone(&timezone);
+        let weekday = Weekday::ALL[local.weekday().num_days_from_monday() as usize];
+        let minute = (local.hour() * 60 + local.minute()) as u16;
+        self.timing_segments().iter().any(|segment| {
+            segment.weekdays.contains(weekday)
+                && minute >= segment.start_minute
+                && minute < segment.end_minute_exclusive
+        })
+    }
+
     pub fn parse(raw: &str) -> Result<Self, DndScheduleParseError> {
         raw.parse()
     }
@@ -477,6 +495,34 @@ fn format_minute(minute: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_zone_schedules_follow_dst_gaps_folds_and_overnight_boundaries() {
+        let zone = "America/Los_Angeles".parse().unwrap();
+        for (rule, instant, expected) in [
+            ("01:30-02:30, sun, reject", "2026-03-08T09:29:59Z", false),
+            ("01:30-02:30, sun, reject", "2026-03-08T09:30:00Z", true),
+            ("01:30-02:30, sun, reject", "2026-03-08T09:59:59Z", true),
+            ("01:30-02:30, sun, reject", "2026-03-08T10:00:00Z", false),
+            ("01:15-01:45, sun, silent", "2026-11-01T08:15:00Z", true),
+            ("01:15-01:45, sun, silent", "2026-11-01T08:45:00Z", false),
+            ("01:15-01:45, sun, silent", "2026-11-01T09:15:00Z", true),
+            ("01:15-01:45, sun, silent", "2026-11-01T09:45:00Z", false),
+            ("22:00-07:00, mon, reject", "2026-09-08T04:59:59Z", false),
+            ("22:00-07:00, mon, reject", "2026-09-08T05:00:00Z", true),
+            ("22:00-07:00, mon, reject", "2026-09-08T13:59:59Z", true),
+            ("22:00-07:00, mon, reject", "2026-09-08T14:00:00Z", false),
+        ] {
+            let instant: DateTime<Utc> = instant.parse().unwrap();
+            assert_eq!(
+                DndSchedule::parse(rule)
+                    .unwrap()
+                    .matches_at(instant.into(), zone),
+                expected,
+                "{rule} at {instant}",
+            );
+        }
+    }
 
     #[test]
     fn parses_and_normalizes_weekly_schedules() {

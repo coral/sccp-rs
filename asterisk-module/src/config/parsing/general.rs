@@ -26,6 +26,20 @@ pub(in crate::config) fn parse_general(
                 DateTemplate::new(raw.trim())
                     .map_err(|error| invalid_option(&diagnostic, raw, &error.to_string(), false))?,
             )?,
+            GeneralOption::Timezone => set_once(
+                &mut draft.timezone,
+                section,
+                key,
+                raw,
+                raw.trim().parse::<sccp_protocol::TimeZone>().map_err(|_| {
+                    invalid_option(
+                        &diagnostic,
+                        raw,
+                        "an IANA timezone, e.g. America/Los_Angeles",
+                        false,
+                    )
+                })?,
+            )?,
             GeneralOption::TimezoneOffset => {
                 let hours = raw
                     .trim()
@@ -758,6 +772,17 @@ pub(in crate::config) fn parse_general(
     config.configuration_source = draft.configuration_source.unwrap_or_default();
     if let Some(order) = draft.call_answer_order {
         config.call_answer_order = order;
+    }
+    if draft.timezone.is_some() && draft.timezone_offset_minutes.is_some() {
+        return Err(invalid_option(
+            "timezone",
+            "timezone + tzoffset",
+            "only one of timezone or tzoffset",
+            false,
+        ));
+    }
+    if let Some(timezone) = draft.timezone {
+        config.timezone = Some(timezone);
     }
     if let Some(offset) = draft.timezone_offset_minutes {
         config.timezone_offset_minutes = offset;

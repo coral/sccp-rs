@@ -45,9 +45,14 @@ dnd_schedule = HH:MM-HH:MM, days, silent|reject
   Duplicate or overlapping windows are rejected after their full weekly,
   including overnight, expansion. Adjacent windows are allowed.
 
-Scheduling uses the Asterisk process's local timezone and follows its clock,
-including daylight-saving changes. The SCCP `tzoffset` display setting does
-not change schedule evaluation.
+Set `timezone = America/Los_Angeles` in `[general]` to use an IANA timezone
+for both phone calendar fields and DND schedules. Daylight-saving transitions
+follow that zone: missing spring minutes are skipped, and repeated fall
+minutes match on both occurrences. Without `timezone`, scheduling uses the
+Asterisk process's local timezone. The SCCP `tzoffset` display setting does
+not change schedule evaluation. `timezone` and `tzoffset` are mutually
+exclusive, and changing either requires a module restart; reload rejects the
+change before applying configuration.
 
 `dnd_feature` controls manual DND buttons and soft keys; it does not disable an
 administrator-configured schedule. A scheduled transition still applies when

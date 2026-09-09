@@ -84,9 +84,6 @@ results to stdout and diagnostics to stderr.
 
 ### Toolchain and dependencies
 
-- Build and test with the latest stable Rust toolchain. Use Rust edition 2024
-  until the project deliberately adopts a newer edition; the edition does not
-  limit which stable compiler version the project uses.
 - Do not preserve an older minimum supported Rust version at the expense of
   using the current toolchain or idiomatic standard-library features.
 - Never downgrade a dependency to avoid adapting the code to its current

@@ -23,6 +23,7 @@ impl Default for GeneralConfig {
             transfer_on_hangup: false,
             call_answer_order: CallAnswerOrder::default(),
             timezone_offset_minutes: 0,
+            timezone: None,
             date_template: DateTemplate::default(),
             ring_type: RingerMode::Outside,
             call_waiting_tone: Some(Tone::CallWaiting),

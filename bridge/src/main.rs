@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         record_dial_terminator: false,
         call_answer_order: sccp_protocol::CallSelectionOrder::OldestFirst,
         timezone_offset_minutes: 0,
+        timezone: None,
         date_template: Default::default(),
         anonymous_hotline: None,
     };
